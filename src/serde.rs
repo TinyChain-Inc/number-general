@@ -209,26 +209,3 @@ impl Serialize for Number {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serialize() {
-        let numbers = [
-            Number::from(false),
-            Number::from(12u16),
-            Number::from(-3),
-            Number::from(3.14),
-            Number::from(_Complex::<f32>::new(0., -1.414)),
-        ];
-
-        for expected in &numbers {
-            let serialized = serde_json::to_string(expected).unwrap();
-            let actual = serde_json::from_str(&serialized).unwrap();
-
-            assert_eq!(expected, &actual);
-        }
-    }
-}

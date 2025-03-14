@@ -19,7 +19,7 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 
     /// Return `true` if this is a complex type.
     fn is_complex(&self) -> bool {
-        return false;
+        false
     }
 
     /// Return `false` if this is a complex type.
