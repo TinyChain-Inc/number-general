@@ -26,7 +26,7 @@ const ERR_COMPLEX_POWER: &str = "complex exponent is not yet supported";
 macro_rules! fmt_debug {
     ($t:ty) => {
         impl fmt::Debug for $t {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{} ({})", self, self.class())
             }
         }
@@ -272,7 +272,7 @@ impl CastFrom<Boolean> for u64 {
 fmt_debug!(Boolean);
 
 impl fmt::Display for Boolean {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
     }
 }
@@ -762,7 +762,7 @@ impl From<Complex> for [Float; 2] {
 fmt_debug!(Complex);
 
 impl fmt::Display for Complex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Complex::C32(c) => fmt::Display::fmt(c, f),
             Complex::C64(c) => fmt::Display::fmt(c, f),
@@ -1181,7 +1181,7 @@ impl From<Float> for f64 {
 fmt_debug!(Float);
 
 impl fmt::Display for Float {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Float::F32(n) => fmt::Display::fmt(n, f),
             Float::F64(n) => fmt::Display::fmt(n, f),
@@ -1718,7 +1718,7 @@ impl FromStr for Int {
 fmt_debug!(Int);
 
 impl fmt::Display for Int {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Int::I8(i) => fmt::Display::fmt(i, f),
             Int::I16(i) => fmt::Display::fmt(i, f),
@@ -2220,7 +2220,7 @@ impl FromStr for UInt {
 fmt_debug!(UInt);
 
 impl fmt::Display for UInt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UInt::U8(u) => fmt::Display::fmt(u, f),
             UInt::U16(u) => fmt::Display::fmt(u, f),
