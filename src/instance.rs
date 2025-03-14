@@ -13,8 +13,8 @@ use std::ops::*;
 use std::str::FromStr;
 
 use collate::Collate;
-use get_size::GetSize;
-use get_size_derive::*;
+use get_size2::GetSize;
+use get_size_derive2::*;
 use num::traits::Pow;
 use safecast::*;
 

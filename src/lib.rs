@@ -31,8 +31,7 @@ use std::ops::*;
 use std::str::FromStr;
 
 use collate::{Collate, Collator};
-use get_size::GetSize;
-use get_size_derive::*;
+use get_size_derive2::*;
 use safecast::{CastFrom, CastInto};
 
 mod class;
