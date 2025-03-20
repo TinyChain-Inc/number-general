@@ -19,7 +19,7 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 
     /// Return `true` if this is a complex type.
     fn is_complex(&self) -> bool {
-        return false;
+        false
     }
 
     /// Return `false` if this is a complex type.
@@ -287,13 +287,13 @@ impl From<ComplexType> for NumberType {
 }
 
 impl fmt::Debug for ComplexType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for ComplexType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::C32 => write!(f, "32-bit complex number"),
             Self::C64 => write!(f, "64-bit complex number"),
@@ -346,13 +346,13 @@ impl From<BooleanType> for NumberType {
 }
 
 impl fmt::Debug for BooleanType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for BooleanType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Boolean")
     }
 }
@@ -436,13 +436,13 @@ impl From<FloatType> for NumberType {
 }
 
 impl fmt::Debug for FloatType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for FloatType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use FloatType::*;
         match self {
             F32 => write!(f, "32-bit float"),
@@ -547,13 +547,13 @@ impl From<IntType> for NumberType {
 }
 
 impl fmt::Debug for IntType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for IntType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::I8 => write!(f, "8-bit integer"),
             Self::I16 => write!(f, "16-bit integer"),
@@ -661,13 +661,13 @@ impl From<UIntType> for NumberType {
 }
 
 impl fmt::Debug for UIntType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for UIntType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use UIntType::*;
         match self {
             U8 => write!(f, "8-bit unsigned"),
@@ -801,13 +801,13 @@ impl PartialOrd for NumberType {
 }
 
 impl fmt::Debug for NumberType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for NumberType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use NumberType::*;
         match self {
             Bool => fmt::Debug::fmt(&BooleanType, f),

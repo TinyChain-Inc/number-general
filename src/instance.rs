@@ -1,3 +1,10 @@
+#![expect(
+    clippy::derived_hash_with_manual_eq,
+    clippy::suspicious_op_assign_impl,
+    clippy::suspicious_arithmetic_impl,
+    reason = "TODO: fix this or add an explanation"
+)]
+
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -6,8 +13,8 @@ use std::ops::*;
 use std::str::FromStr;
 
 use collate::Collate;
-use get_size::GetSize;
-use get_size_derive::*;
+use get_size2::GetSize;
+use get_size_derive2::*;
 use num::traits::Pow;
 use safecast::*;
 
@@ -19,7 +26,7 @@ const ERR_COMPLEX_POWER: &str = "complex exponent is not yet supported";
 macro_rules! fmt_debug {
     ($t:ty) => {
         impl fmt::Debug for $t {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "{} ({})", self, self.class())
             }
         }
@@ -27,7 +34,7 @@ macro_rules! fmt_debug {
 }
 
 /// A boolean value.
-#[derive(Clone, Copy, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Hash, Ord, PartialEq, PartialOrd, Default)]
 pub struct Boolean(bool);
 
 impl GetSize for Boolean {
@@ -112,12 +119,6 @@ impl NumberInstance for Boolean {
 impl RealInstance for Boolean {
     const ONE: Self = Boolean(true);
     const ZERO: Self = Boolean(false);
-}
-
-impl Default for Boolean {
-    fn default() -> Boolean {
-        Self(false)
-    }
 }
 
 impl From<bool> for Boolean {
@@ -271,7 +272,7 @@ impl CastFrom<Boolean> for u64 {
 fmt_debug!(Boolean);
 
 impl fmt::Display for Boolean {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)
     }
 }
@@ -534,7 +535,7 @@ impl Sum for Complex {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = ComplexType::Complex.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -599,7 +600,7 @@ impl Product for Complex {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -761,7 +762,7 @@ impl From<Complex> for [Float; 2] {
 fmt_debug!(Complex);
 
 impl fmt::Display for Complex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Complex::C32(c) => fmt::Display::fmt(c, f),
             Complex::C64(c) => fmt::Display::fmt(c, f),
@@ -941,7 +942,7 @@ impl Sum for Float {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = FloatType::Float.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -1017,7 +1018,7 @@ impl Product for Float {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -1153,11 +1154,7 @@ impl CastFrom<Complex> for Float {
 impl CastFrom<Float> for Boolean {
     fn cast_from(f: Float) -> Boolean {
         use Float::*;
-        let b = match f {
-            F32(f) if f == 0f32 => false,
-            F64(f) if f == 0f64 => false,
-            _ => true,
-        };
+        let b = !matches!(f, F32(0f32) | F64(0f64));
 
         Boolean(b)
     }
@@ -1184,7 +1181,7 @@ impl From<Float> for f64 {
 fmt_debug!(Float);
 
 impl fmt::Display for Float {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Float::F32(n) => fmt::Display::fmt(n, f),
             Float::F64(n) => fmt::Display::fmt(n, f),
@@ -1237,8 +1234,8 @@ impl Collate for FloatCollator {
             order
         } else {
             match (left, right) {
-                (Float::F32(l), Float::F32(r)) => self.f32.cmp(l.into(), r.into()),
-                (Float::F64(l), Float::F64(r)) => self.f64.cmp(l.into(), r.into()),
+                (Float::F32(l), Float::F32(r)) => self.f32.cmp(l, r),
+                (Float::F64(l), Float::F64(r)) => self.f64.cmp(l, r),
                 (l, r) => self.f64.cmp(&(*l).cast_into(), &(*r).cast_into()),
             }
         }
@@ -1372,13 +1369,7 @@ impl CastFrom<Float> for Int {
 impl CastFrom<Int> for Boolean {
     fn cast_from(i: Int) -> Boolean {
         use Int::*;
-        let b = match i {
-            I16(i) if i == 0i16 => false,
-            I32(i) if i == 0i32 => false,
-            I64(i) if i == 0i64 => false,
-            _ => true,
-        };
-
+        let b = !matches!(i, I16(0i16) | I32(0i32) | I64(0i64));
         Boolean(b)
     }
 }
@@ -1513,7 +1504,7 @@ impl Sum for Int {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = IntType::Int.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -1587,7 +1578,7 @@ impl Product for Int {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -1727,7 +1718,7 @@ impl FromStr for Int {
 fmt_debug!(Int);
 
 impl fmt::Display for Int {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Int::I8(i) => fmt::Display::fmt(i, f),
             Int::I16(i) => fmt::Display::fmt(i, f),
@@ -1871,13 +1862,7 @@ impl CastFrom<Int> for UInt {
 impl CastFrom<UInt> for bool {
     fn cast_from(u: UInt) -> bool {
         use UInt::*;
-        match u {
-            U8(u) if u == 0u8 => false,
-            U16(u) if u == 0u16 => false,
-            U32(u) if u == 0u32 => false,
-            U64(u) if u == 0u64 => false,
-            _ => true,
-        }
+        !matches!(u, U8(0u8) | U16(0u16) | U32(0u32) | U64(0u64))
     }
 }
 
@@ -2015,7 +2000,7 @@ impl Sum for UInt {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = UIntType::UInt.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -2093,7 +2078,7 @@ impl Product for UInt {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -2235,7 +2220,7 @@ impl FromStr for UInt {
 fmt_debug!(UInt);
 
 impl fmt::Display for UInt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             UInt::U8(u) => fmt::Display::fmt(u, f),
             UInt::U16(u) => fmt::Display::fmt(u, f),
