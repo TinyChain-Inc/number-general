@@ -3,12 +3,12 @@ name: CI
 on:
   push:
     branches:
-      - main
+      - "**"  # Runs on push to any branch
     tags:
-      - "*"
+      - "*"   # Runs on any tag
   pull_request:
     branches:
-      - main
+      - "**"  # Runs on pull request to any branch
 
 jobs:
   build:
