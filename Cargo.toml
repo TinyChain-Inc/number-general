@@ -1,12 +1,12 @@
 [package]
 name = "number-general"
-version = "0.12.0"
+version = "0.13.0"
 authors = ["code@tinychain.net"]
 edition = "2021"
 description = "A generic number type for Rust which supports basic math and (de)serialization."
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/haydnv/number-general.git"
+repository = "https://github.com/TinyChain-Inc/number-general.git"
 
 categories = ["data-structures", "mathematics"]
 keywords = ["number", "complex", "float", "integer", "unsigned"]
@@ -18,9 +18,8 @@ all = ["hash", "serde", "stream"]
 
 [dependencies]
 async-hash = { version = "0.5", optional = true }
-async-trait = "0.1"
 collate = "0.4"
-destream = { git = "https://github.com/drewmcarthur/destream.git", branch = "add-derivability", optional = true }
+destream = { path = "../destream", version = "0.10.0", optional = true }
 futures = { version = "0.3", optional = true }
 get-size = "0.1"
 get-size-derive = "0.1"

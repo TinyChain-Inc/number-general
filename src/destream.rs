@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use destream::de::{self, Decoder, FromStream, Visitor};
 use destream::en::{EncodeSeq, Encoder, IntoStream, ToStream};
 use futures::TryFutureExt;
@@ -7,7 +6,6 @@ use super::{
     Boolean, Complex, Float, Int, Number, NumberVisitor, UInt, _Complex, ERR_COMPLEX, ERR_NUMBER,
 };
 
-#[async_trait]
 impl FromStream for Boolean {
     type Context = ();
 
@@ -31,7 +29,6 @@ impl<'en> IntoStream<'en> for Boolean {
     }
 }
 
-#[async_trait]
 impl FromStream for Complex {
     type Context = ();
 
@@ -39,7 +36,7 @@ impl FromStream for Complex {
         cxt: Self::Context,
         decoder: &mut D,
     ) -> Result<Self, D::Error> {
-        let [re, im]: [f64; 2] = FromStream::from_stream(cxt, decoder).await?;
+        let [re, im]: [f64; 2] = <[f64; 2] as FromStream>::from_stream(cxt, decoder).await?;
         Ok(num::Complex::new(re, im).into())
     }
 }
@@ -82,7 +79,6 @@ impl<'en> IntoStream<'en> for Complex {
     }
 }
 
-#[async_trait]
 impl FromStream for Float {
     type Context = ();
 
@@ -112,7 +108,6 @@ impl<'en> IntoStream<'en> for Float {
     }
 }
 
-#[async_trait]
 impl FromStream for Int {
     type Context = ();
 
@@ -146,7 +141,6 @@ impl<'en> IntoStream<'en> for Int {
     }
 }
 
-#[async_trait]
 impl FromStream for UInt {
     type Context = ();
 
@@ -180,7 +174,6 @@ impl<'en> IntoStream<'en> for UInt {
     }
 }
 
-#[async_trait]
 impl Visitor for NumberVisitor {
     type Value = Number;
 
@@ -266,7 +259,6 @@ impl Visitor for NumberVisitor {
     }
 }
 
-#[async_trait]
 impl FromStream for Number {
     type Context = ();
 
