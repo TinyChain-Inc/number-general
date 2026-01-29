@@ -46,14 +46,14 @@ impl<'en> ToStream<'en> for Complex {
         match self {
             Complex::C32(c) => {
                 let mut seq = e.encode_seq(Some(2))?;
-                seq.encode_element(&c.re)?;
-                seq.encode_element(&c.im)?;
+                seq.encode_element(c.re)?;
+                seq.encode_element(c.im)?;
                 seq.end()
             }
             Complex::C64(c) => {
                 let mut seq = e.encode_seq(Some(2))?;
-                seq.encode_element(&c.re)?;
-                seq.encode_element(&c.im)?;
+                seq.encode_element(c.re)?;
+                seq.encode_element(c.im)?;
                 seq.end()
             }
         }

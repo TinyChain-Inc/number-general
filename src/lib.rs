@@ -22,13 +22,13 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::iter::{Product, Sum};
-use std::ops::*;
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use std::str::FromStr;
 
 use collate::{Collate, Collator};
 use get_size::GetSize;
-use get_size_derive::*;
 use safecast::{CastFrom, CastInto};
 
 mod class;
@@ -48,6 +48,19 @@ const ERR_COMPLEX: &str = "a complex number";
 
 #[cfg(any(feature = "serde", feature = "stream"))]
 const ERR_NUMBER: &str = "a Number, like 1 or -2 or 3.14 or [0., -1.414]";
+
+const CANONICAL_NAN32_BITS: u32 = 0x7fc0_0000;
+
+#[inline]
+fn normalized_f32_bits(f: f32) -> u32 {
+    if f == 0.0 {
+        0
+    } else if f.is_nan() {
+        CANONICAL_NAN32_BITS
+    } else {
+        f.to_bits()
+    }
+}
 
 /// Define a [`NumberType`] for a non-[`Number`] type such as a Rust primitive.
 ///
@@ -106,7 +119,7 @@ impl fmt::Display for Error {
 type _Complex<T> = num::complex::Complex<T>;
 
 /// A generic number.
-#[derive(Clone, Copy, Eq, Hash, GetSize)]
+#[derive(Clone, Copy, Eq, get_size_derive::GetSize)]
 pub enum Number {
     Bool(Boolean),
     Complex(Complex),
@@ -118,29 +131,17 @@ pub enum Number {
 impl Number {
     /// Return `true` if this is floating-point [`Number`], `false` if this is an integer.
     pub fn is_float(&self) -> bool {
-        match self {
-            Self::Complex(_) => true,
-            Self::Float(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Complex(_) | Self::Float(_))
     }
 
     /// Return `true` if this is an [`Int`] or [`UInt`].
     pub fn is_int(&self) -> bool {
-        match self {
-            Self::Int(_) => true,
-            Self::UInt(_) => true,
-            _ => false,
-        }
+        matches!(self, Self::Int(_) | Self::UInt(_))
     }
 
     /// Return `false` if this is a [`Complex`] `Number`.
     pub fn is_real(&self) -> bool {
-        if let Self::Complex(_) = self {
-            false
-        } else {
-            true
-        }
+        !matches!(self, Self::Complex(_))
     }
 }
 
@@ -281,20 +282,28 @@ impl FloatInstance for Number {
 
 impl PartialEq for Number {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Int(l), Self::Int(r)) => l.eq(r),
-            (Self::UInt(l), Self::UInt(r)) => l.eq(r),
-            (Self::Float(l), Self::Float(r)) => l.eq(r),
-            (Self::Bool(l), Self::Bool(r)) => l.eq(r),
-            (Self::Complex(l), Self::Complex(r)) => l.eq(r),
+        let dtype = Ord::max(self.class(), other.class());
+        let l = (*self).into_type(dtype);
+        let r = (*other).into_type(dtype);
 
-            (Self::Complex(l), r) => l.eq(&Complex::cast_from(*r)),
-            (Self::Float(l), r) => l.eq(&Float::cast_from(*r)),
-            (Self::Int(l), r) => l.eq(&Int::cast_from(*r)),
-            (Self::UInt(l), r) => l.eq(&UInt::cast_from(*r)),
-
-            (l, r) => r.eq(l),
+        match (l, r) {
+            (Self::Bool(l), Self::Bool(r)) => l.eq(&r),
+            (Self::Complex(l), Self::Complex(r)) => l.eq(&r),
+            (Self::Float(l), Self::Float(r)) => l.eq(&r),
+            (Self::Int(l), Self::Int(r)) => l.eq(&r),
+            (Self::UInt(l), Self::UInt(r)) => l.eq(&r),
+            _ => {
+                unreachable!("a Number instance must have a specific type, not NumberType::Number")
+            }
         }
+    }
+}
+
+impl Hash for Number {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let c: _Complex<f32> = Complex::cast_from(*self).cast_into();
+        normalized_f32_bits(c.re).hash(state);
+        normalized_f32_bits(c.im).hash(state);
     }
 }
 
@@ -318,37 +327,47 @@ impl PartialOrd for Number {
     }
 }
 
-impl Add for Number {
-    type Output = Self;
-
-    fn add(self, other: Number) -> Self {
-        let dtype = Ord::max(self.class(), other.class());
+macro_rules! number_binop {
+    ($lhs:expr, $rhs:expr, $op:tt) => {{
+        let lhs = $lhs;
+        let rhs = $rhs;
+        let dtype = Ord::max(lhs.class(), rhs.class());
 
         use NumberType as NT;
 
         match dtype {
             NT::Bool => {
-                let this: Boolean = self.cast_into();
-                (this + other.cast_into()).into()
+                let lhs: Boolean = lhs.cast_into();
+                (lhs $op rhs.cast_into()).into()
             }
             NT::Complex(_) => {
-                let this: Complex = self.cast_into();
-                (this + other.cast_into()).into()
+                let lhs: Complex = lhs.cast_into();
+                (lhs $op rhs.cast_into()).into()
             }
             NT::Float(_) => {
-                let this: Float = self.cast_into();
-                (this + other.cast_into()).into()
+                let lhs: Float = lhs.cast_into();
+                (lhs $op rhs.cast_into()).into()
             }
             NT::Int(_) => {
-                let this: Int = self.cast_into();
-                (this + other.cast_into()).into()
+                let lhs: Int = lhs.cast_into();
+                (lhs $op rhs.cast_into()).into()
             }
             NT::UInt(_) => {
-                let this: UInt = self.cast_into();
-                (this + other.cast_into()).into()
+                let lhs: UInt = lhs.cast_into();
+                (lhs $op rhs.cast_into()).into()
             }
-            NT::Number => panic!("A number instance must have a specific type, not Number"),
+            NT::Number => unreachable!(
+                "a Number instance must have a specific type, not NumberType::Number"
+            ),
         }
+    }};
+}
+
+impl Add for Number {
+    type Output = Self;
+
+    fn add(self, other: Number) -> Self {
+        number_binop!(self, other, +)
     }
 }
 
@@ -363,33 +382,7 @@ impl Rem for Number {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        let dtype = Ord::max(self.class(), other.class());
-
-        use NumberType as NT;
-
-        match dtype {
-            NT::Bool => {
-                let this: Boolean = self.cast_into();
-                (this % other.cast_into()).into()
-            }
-            NT::Complex(_) => {
-                let this: Complex = self.cast_into();
-                (this % other.cast_into()).into()
-            }
-            NT::Float(_) => {
-                let this: Float = self.cast_into();
-                (this % other.cast_into()).into()
-            }
-            NT::Int(_) => {
-                let this: Int = self.cast_into();
-                (this % other.cast_into()).into()
-            }
-            NT::UInt(_) => {
-                let this: UInt = self.cast_into();
-                (this % other.cast_into()).into()
-            }
-            NT::Number => panic!("A number instance must have a specific type, not Number"),
-        }
+        number_binop!(self, other, %)
     }
 }
 
@@ -404,33 +397,7 @@ impl Sub for Number {
     type Output = Self;
 
     fn sub(self, other: Number) -> Self {
-        let dtype = Ord::max(self.class(), other.class());
-
-        use NumberType as NT;
-
-        match dtype {
-            NT::Bool => {
-                let this: Boolean = self.cast_into();
-                (this - other.cast_into()).into()
-            }
-            NT::Complex(_) => {
-                let this: Complex = self.cast_into();
-                (this - other.cast_into()).into()
-            }
-            NT::Float(_) => {
-                let this: Float = self.cast_into();
-                (this - other.cast_into()).into()
-            }
-            NT::Int(_) => {
-                let this: Int = self.cast_into();
-                (this - other.cast_into()).into()
-            }
-            NT::UInt(_) => {
-                let this: UInt = self.cast_into();
-                (this - other.cast_into()).into()
-            }
-            NT::Number => panic!("A number instance must have a specific type, not Number"),
-        }
+        number_binop!(self, other, -)
     }
 }
 
@@ -445,7 +412,7 @@ impl Sum for Number {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = NumberType::Number.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -455,33 +422,7 @@ impl Mul for Number {
     type Output = Self;
 
     fn mul(self, other: Number) -> Self {
-        let dtype = Ord::max(self.class(), other.class());
-
-        use NumberType as NT;
-
-        match dtype {
-            NT::Bool => {
-                let this: Boolean = self.cast_into();
-                (this * other.cast_into()).into()
-            }
-            NT::Complex(_) => {
-                let this: Complex = self.cast_into();
-                (this * other.cast_into()).into()
-            }
-            NT::Float(_) => {
-                let this: Float = self.cast_into();
-                (this * other.cast_into()).into()
-            }
-            NT::Int(_) => {
-                let this: Int = self.cast_into();
-                (this * other.cast_into()).into()
-            }
-            NT::UInt(_) => {
-                let this: UInt = self.cast_into();
-                (this * other.cast_into()).into()
-            }
-            NT::Number => panic!("A number instance must have a specific type, not Number"),
-        }
+        number_binop!(self, other, *)
     }
 }
 
@@ -496,33 +437,7 @@ impl Div for Number {
     type Output = Self;
 
     fn div(self, other: Number) -> Self {
-        let dtype = Ord::max(self.class(), other.class());
-
-        use NumberType as NT;
-
-        match dtype {
-            NT::Number => panic!("A number instance must have a specific type, not Number"),
-            NT::Complex(_) => {
-                let this: Complex = self.cast_into();
-                (this / other.cast_into()).into()
-            }
-            NT::Float(_) => {
-                let this: Float = self.cast_into();
-                (this / other.cast_into()).into()
-            }
-            NT::Int(_) => {
-                let this: Int = self.cast_into();
-                (this / other.cast_into()).into()
-            }
-            NT::UInt(_) => {
-                let this: UInt = self.cast_into();
-                (this / other.cast_into()).into()
-            }
-            NT::Bool => {
-                let this: Boolean = self.cast_into();
-                (this / other.cast_into()).into()
-            }
-        }
+        number_binop!(self, other, /)
     }
 }
 
@@ -543,7 +458,7 @@ impl Product for Number {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -600,29 +515,43 @@ impl From<Boolean> for Number {
     }
 }
 
-impl From<u8> for Number {
-    fn from(u: u8) -> Self {
-        Self::UInt(u.into())
-    }
+macro_rules! from_uint {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl From<$t> for Number {
+                fn from(u: $t) -> Self {
+                    Self::UInt(u.into())
+                }
+            }
+        )+
+    };
 }
 
-impl From<u16> for Number {
-    fn from(u: u16) -> Self {
-        Self::UInt(u.into())
-    }
+macro_rules! from_int {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl From<$t> for Number {
+                fn from(i: $t) -> Self {
+                    Self::Int(i.into())
+                }
+            }
+        )+
+    };
 }
 
-impl From<u32> for Number {
-    fn from(u: u32) -> Self {
-        Self::UInt(u.into())
-    }
+macro_rules! from_float {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl From<$t> for Number {
+                fn from(f: $t) -> Self {
+                    Self::Float(f.into())
+                }
+            }
+        )+
+    };
 }
 
-impl From<u64> for Number {
-    fn from(u: u64) -> Self {
-        Self::UInt(u.into())
-    }
-}
+from_uint!(u8, u16, u32, u64);
 
 impl From<UInt> for Number {
     fn from(u: UInt) -> Number {
@@ -630,29 +559,7 @@ impl From<UInt> for Number {
     }
 }
 
-impl From<i8> for Number {
-    fn from(i: i8) -> Self {
-        Self::Int(i.into())
-    }
-}
-
-impl From<i16> for Number {
-    fn from(i: i16) -> Self {
-        Self::Int(i.into())
-    }
-}
-
-impl From<i32> for Number {
-    fn from(i: i32) -> Self {
-        Self::Int(i.into())
-    }
-}
-
-impl From<i64> for Number {
-    fn from(i: i64) -> Self {
-        Self::Int(i.into())
-    }
-}
+from_int!(i8, i16, i32, i64);
 
 impl From<Int> for Number {
     fn from(i: Int) -> Number {
@@ -660,17 +567,7 @@ impl From<Int> for Number {
     }
 }
 
-impl From<f32> for Number {
-    fn from(f: f32) -> Self {
-        Self::Float(f.into())
-    }
-}
-
-impl From<f64> for Number {
-    fn from(f: f64) -> Self {
-        Self::Float(f.into())
-    }
-}
+from_float!(f32, f64);
 
 impl From<Float> for Number {
     fn from(f: Float) -> Number {
@@ -713,18 +610,22 @@ impl FromStr for Number {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
+        let bytes = s.as_bytes();
 
         if s.is_empty() {
             Err(Error(
                 "cannot parse a Number from an empty string".to_string(),
             ))
-        } else if s.len() == 1 {
+        } else if bytes.len() == 1 {
             Int::from_str(s).map(Self::from)
-        } else if s.contains("e+") || s.contains("e-") {
+        } else if bytes
+            .windows(2)
+            .any(|w| matches!(w, [b'e' | b'E', b'+' | b'-']))
+        {
             Float::from_str(s).map(Self::from)
-        } else if s[1..].contains('+') || s[1..].contains('-') {
+        } else if bytes.iter().skip(1).any(|b| matches!(b, b'+' | b'-')) {
             Complex::from_str(s).map(Self::from)
-        } else if s.contains('.') || s.contains('e') {
+        } else if bytes.contains(&b'.') || bytes.iter().any(|b| matches!(b, b'e' | b'E')) {
             Float::from_str(s).map(Self::from)
         } else {
             Int::from_str(s).map(Self::from)
@@ -734,10 +635,12 @@ impl FromStr for Number {
 
 impl CastFrom<Number> for Boolean {
     fn cast_from(number: Number) -> Boolean {
-        if number == number.class().zero() {
-            false.into()
-        } else {
-            true.into()
+        match number {
+            Number::Bool(b) => b,
+            Number::Complex(c) => Boolean::cast_from(c),
+            Number::Float(f) => Boolean::cast_from(f),
+            Number::Int(i) => Boolean::cast_from(i),
+            Number::UInt(u) => Boolean::from(bool::cast_from(u)),
         }
     }
 }
@@ -908,7 +811,7 @@ impl NumberVisitor {
 
     #[inline]
     fn i8<E>(self, i: i8) -> Result<Number, E> {
-        Ok(Number::Int(Int::I16(i as i16)))
+        Ok(Number::Int(Int::I8(i)))
     }
 
     #[inline]
@@ -979,6 +882,7 @@ impl fmt::Display for Number {
 mod tests {
     use super::*;
 
+    #[allow(clippy::approx_constant)] // tests use simple decimal literals for readability
     #[test]
     fn test_complex() {
         let n = Complex::from([1.23, -3.14]);
@@ -1031,7 +935,7 @@ mod tests {
             assert_eq!(two.ln() / two.ln(), one);
 
             if one.is_real() {
-                assert_eq!(Number::from(2 % 1), two % one);
+                assert_eq!(zero, two % one);
                 assert_eq!(one, one.pow(zero));
                 assert_eq!(one * one, one.pow(two));
                 assert_eq!(two.pow(two), (one * two).pow(two));
@@ -1045,6 +949,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // tests use explicit literals to validate parsing
     fn test_parse() {
         assert_eq!(Number::from_str("12").unwrap(), Number::from(12));
         assert_eq!(Number::from_str("1e6").unwrap(), Number::from(1e6));
