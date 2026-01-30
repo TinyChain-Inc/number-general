@@ -1,9 +1,9 @@
 use std::cmp::Ordering;
 use std::fmt;
 use std::iter::{Product, Sum};
-use std::ops::*;
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
-use safecast::*;
+use safecast::{CastFrom, CastInto};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 
     /// Return `true` if this is a complex type.
     fn is_complex(&self) -> bool {
-        return false;
+        false
     }
 
     /// Return `false` if this is a complex type.
@@ -205,18 +205,13 @@ pub trait FloatInstance {
 }
 
 /// The type of a [`Complex`] number.
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ComplexType {
     C32,
     C64,
+    #[default]
     Complex,
-}
-
-impl Default for ComplexType {
-    fn default() -> Self {
-        Self::Complex
-    }
 }
 
 impl NumberClass for ComplexType {
@@ -358,18 +353,13 @@ impl fmt::Display for BooleanType {
 }
 
 /// The type of a [`Float`].
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FloatType {
     F32,
     F64,
+    #[default]
     Float,
-}
-
-impl Default for FloatType {
-    fn default() -> Self {
-        Self::Float
-    }
 }
 
 impl NumberClass for FloatType {
@@ -453,20 +443,15 @@ impl fmt::Display for FloatType {
 }
 
 /// The type of an [`Int`].
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum IntType {
     I8,
     I16,
     I32,
     I64,
+    #[default]
     Int,
-}
-
-impl Default for IntType {
-    fn default() -> Self {
-        Self::Int
-    }
 }
 
 impl NumberClass for IntType {
@@ -565,20 +550,15 @@ impl fmt::Display for IntType {
 }
 
 /// The type of a [`UInt`].
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum UIntType {
     U8,
     U16,
     U32,
     U64,
+    #[default]
     UInt,
-}
-
-impl Default for UIntType {
-    fn default() -> Self {
-        Self::UInt
-    }
 }
 
 impl NumberClass for UIntType {
@@ -680,7 +660,7 @@ impl fmt::Display for UIntType {
 }
 
 /// The type of a generic [`Number`].
-#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Hash, Eq, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum NumberType {
     Bool,
@@ -688,18 +668,13 @@ pub enum NumberType {
     Float(FloatType),
     Int(IntType),
     UInt(UIntType),
+    #[default]
     Number,
 }
 
 impl NumberType {
     pub fn uint64() -> Self {
         NumberType::UInt(UIntType::U64)
-    }
-}
-
-impl Default for NumberType {
-    fn default() -> Self {
-        Self::Number
     }
 }
 

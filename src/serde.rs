@@ -215,6 +215,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::approx_constant)] // tests use explicit literals to validate serialization
     fn test_serialize() {
         let numbers = [
             Number::from(false),

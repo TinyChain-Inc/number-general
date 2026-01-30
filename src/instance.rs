@@ -2,16 +2,18 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::{Product, Sum};
-use std::ops::*;
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use std::str::FromStr;
 
 use collate::Collate;
 use get_size::GetSize;
-use get_size_derive::*;
 use num::traits::Pow;
-use safecast::*;
+use safecast::{CastFrom, CastInto};
 
-use super::class::*;
+use super::class::{
+    BooleanType, ComplexType, FloatInstance, FloatType, IntType, NumberClass, NumberInstance,
+    RealInstance, Trigonometry, UIntType,
+};
 use super::{Error, Number, _Complex};
 
 const ERR_COMPLEX_POWER: &str = "complex exponent is not yet supported";
@@ -27,7 +29,7 @@ macro_rules! fmt_debug {
 }
 
 /// A boolean value.
-#[derive(Clone, Copy, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Default, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Boolean(bool);
 
 impl GetSize for Boolean {
@@ -114,12 +116,6 @@ impl RealInstance for Boolean {
     const ZERO: Self = Boolean(false);
 }
 
-impl Default for Boolean {
-    fn default() -> Boolean {
-        Self(false)
-    }
-}
-
 impl From<bool> for Boolean {
     fn from(b: bool) -> Boolean {
         Self(b)
@@ -158,7 +154,7 @@ impl Add for Boolean {
 
 impl AddAssign for Boolean {
     fn add_assign(&mut self, other: Self) {
-        self.0 |= other.0
+        self.0 = self.0 || other.0;
     }
 }
 
@@ -166,13 +162,13 @@ impl Rem for Boolean {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        self - other
+        self.xor(other)
     }
 }
 
 impl RemAssign for Boolean {
     fn rem_assign(&mut self, other: Self) {
-        *self -= other
+        *self = *self % other;
     }
 }
 
@@ -186,7 +182,7 @@ impl Sub for Boolean {
 
 impl SubAssign for Boolean {
     fn sub_assign(&mut self, other: Self) {
-        self.0 ^= other.0
+        self.0 = self.0 != other.0;
     }
 }
 
@@ -206,7 +202,7 @@ impl Mul for Boolean {
 
 impl MulAssign for Boolean {
     fn mul_assign(&mut self, other: Self) {
-        self.0 &= other.0
+        self.0 = self.0 && other.0;
     }
 }
 
@@ -534,7 +530,7 @@ impl Sum for Complex {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = ComplexType::Complex.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -599,7 +595,7 @@ impl Product for Complex {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -637,12 +633,11 @@ impl Trigonometry for Complex {
 
 impl PartialEq for Complex {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::C32(l), Self::C32(r)) => l.eq(r),
-            (Self::C64(l), Self::C64(r)) => l.eq(r),
-            (Self::C64(l), Self::C32(r)) => l.re as f32 == r.re && l.im as f32 == r.im,
-            (l, r) => r.eq(l),
-        }
+        let l: _Complex<f32> = (*self).cast_into();
+        let r: _Complex<f32> = (*other).cast_into();
+
+        super::normalized_f32_bits(l.re) == super::normalized_f32_bits(r.re)
+            && super::normalized_f32_bits(l.im) == super::normalized_f32_bits(r.im)
     }
 }
 
@@ -650,16 +645,9 @@ impl Eq for Complex {}
 
 impl Hash for Complex {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Self::C32(c) => {
-                Float::F32(c.re).hash(state);
-                Float::F32(c.im).hash(state);
-            }
-            Self::C64(c) => {
-                Float::F64(c.re).hash(state);
-                Float::F64(c.im).hash(state);
-            }
-        }
+        let c: _Complex<f32> = (*self).cast_into();
+        super::normalized_f32_bits(c.re).hash(state);
+        super::normalized_f32_bits(c.im).hash(state);
     }
 }
 
@@ -713,7 +701,7 @@ impl From<Boolean> for Complex {
     fn from(b: Boolean) -> Self {
         match b {
             Boolean(true) => Self::C32(_Complex::new(1.0f32, 0.0f32)),
-            Boolean(false) => Self::C32(_Complex::new(1.0f32, 0.0f32)),
+            Boolean(false) => Self::C32(_Complex::new(0.0f32, 0.0f32)),
         }
     }
 }
@@ -784,7 +772,7 @@ impl Collate for ComplexCollator {
 }
 
 /// A floating-point number.
-#[derive(Clone, Copy, GetSize)]
+#[derive(Clone, Copy, get_size_derive::GetSize)]
 pub enum Float {
     F32(f32),
     F64(f64),
@@ -941,7 +929,7 @@ impl Sum for Float {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = FloatType::Float.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -1017,7 +1005,7 @@ impl Product for Float {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -1055,21 +1043,14 @@ impl Trigonometry for Float {
 
 impl Hash for Float {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Self::F32(f) => f.to_be_bytes().hash(state),
-            Self::F64(f) => f.to_be_bytes().hash(state),
-        }
+        super::normalized_f32_bits(f32::cast_from(*self)).hash(state);
     }
 }
 
 impl PartialEq for Float {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::F32(l), Self::F32(r)) => l.eq(r),
-            (Self::F64(l), Self::F64(r)) => l.eq(r),
-            (Self::F64(l), Self::F32(r)) => (*l as f32).eq(r),
-            (l, r) => r.eq(l),
-        }
+        super::normalized_f32_bits(f32::cast_from(*self))
+            == super::normalized_f32_bits(f32::cast_from(*other))
     }
 }
 
@@ -1153,13 +1134,7 @@ impl CastFrom<Complex> for Float {
 impl CastFrom<Float> for Boolean {
     fn cast_from(f: Float) -> Boolean {
         use Float::*;
-        let b = match f {
-            F32(f) if f == 0f32 => false,
-            F64(f) if f == 0f64 => false,
-            _ => true,
-        };
-
-        Boolean(b)
+        Boolean(!matches!(f, F32(0f32) | F64(0f64)))
     }
 }
 
@@ -1237,8 +1212,8 @@ impl Collate for FloatCollator {
             order
         } else {
             match (left, right) {
-                (Float::F32(l), Float::F32(r)) => self.f32.cmp(l.into(), r.into()),
-                (Float::F64(l), Float::F64(r)) => self.f64.cmp(l.into(), r.into()),
+                (Float::F32(l), Float::F32(r)) => self.f32.cmp(l, r),
+                (Float::F64(l), Float::F64(r)) => self.f64.cmp(l, r),
                 (l, r) => self.f64.cmp(&(*l).cast_into(), &(*r).cast_into()),
             }
         }
@@ -1246,7 +1221,7 @@ impl Collate for FloatCollator {
 }
 
 /// A signed integer.
-#[derive(Clone, Copy, Hash, GetSize)]
+#[derive(Clone, Copy, get_size_derive::GetSize)]
 pub enum Int {
     I8(i8),
     I16(i16),
@@ -1372,14 +1347,7 @@ impl CastFrom<Float> for Int {
 impl CastFrom<Int> for Boolean {
     fn cast_from(i: Int) -> Boolean {
         use Int::*;
-        let b = match i {
-            I16(i) if i == 0i16 => false,
-            I32(i) if i == 0i32 => false,
-            I64(i) if i == 0i64 => false,
-            _ => true,
-        };
-
-        Boolean(b)
+        Boolean(!matches!(i, I8(0) | I16(0) | I32(0) | I64(0)))
     }
 }
 
@@ -1513,7 +1481,7 @@ impl Sum for Int {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = IntType::Int.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -1587,7 +1555,7 @@ impl Product for Int {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -1634,6 +1602,12 @@ impl PartialEq for Int {
             (Self::I64(l), r) => l.eq(&i64::from(*r)),
             (l, r) => i64::from(*l).eq(&i64::from(*r)),
         }
+    }
+}
+
+impl Hash for Int {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        i64::from(*self).hash(state);
     }
 }
 
@@ -1738,7 +1712,7 @@ impl fmt::Display for Int {
 }
 
 /// An unsigned integer.
-#[derive(Clone, Copy, Hash, GetSize)]
+#[derive(Clone, Copy, get_size_derive::GetSize)]
 pub enum UInt {
     U8(u8),
     U16(u16),
@@ -1871,13 +1845,7 @@ impl CastFrom<Int> for UInt {
 impl CastFrom<UInt> for bool {
     fn cast_from(u: UInt) -> bool {
         use UInt::*;
-        match u {
-            U8(u) if u == 0u8 => false,
-            U16(u) if u == 0u16 => false,
-            U32(u) if u == 0u32 => false,
-            U64(u) if u == 0u64 => false,
-            _ => true,
-        }
+        !matches!(u, U8(0u8) | U16(0u16) | U32(0u32) | U64(0u64))
     }
 }
 
@@ -2015,7 +1983,7 @@ impl Sum for UInt {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         let mut sum = UIntType::UInt.zero();
         for i in iter {
-            sum = sum + i;
+            sum += i;
         }
         sum
     }
@@ -2093,7 +2061,7 @@ impl Product for UInt {
                 return zero;
             }
 
-            product = product * i;
+            product *= i;
         }
         product
     }
@@ -2142,6 +2110,12 @@ impl PartialEq for UInt {
             (Self::U64(l), Self::U64(r)) => l.eq(r),
             (l, r) => u64::from(*l).eq(&u64::from(*r)),
         }
+    }
+}
+
+impl Hash for UInt {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        u64::from(*self).hash(state);
     }
 }
 
