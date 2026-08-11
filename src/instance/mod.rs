@@ -14,7 +14,7 @@ use super::class::{
     BooleanType, ComplexType, FloatInstance, FloatType, IntType, NumberClass, NumberInstance,
     RealInstance, Trigonometry, UIntType,
 };
-use super::{Error, Number, _Complex};
+use super::{_Complex, Error, Number};
 
 const ERR_COMPLEX_POWER: &str = "complex exponent is not yet supported";
 

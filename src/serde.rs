@@ -4,7 +4,7 @@ use serde::de::{self, Deserialize, Deserializer, Visitor};
 use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 use super::{
-    Boolean, Complex, Float, Int, Number, NumberVisitor, UInt, _Complex, ERR_COMPLEX, ERR_NUMBER,
+    _Complex, Boolean, Complex, Float, Int, Number, NumberVisitor, UInt, ERR_COMPLEX, ERR_NUMBER,
 };
 
 impl Serialize for Boolean {

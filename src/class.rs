@@ -8,7 +8,7 @@ use safecast::{CastFrom, CastInto};
 use serde::{Deserialize, Serialize};
 
 use super::instance::{Boolean, Complex, Float, Int, UInt};
-use super::{Number, _Complex};
+use super::{_Complex, Number};
 
 /// Defines common properties of numeric types supported by [`Number`].
 pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {

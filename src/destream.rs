@@ -3,7 +3,7 @@ use destream::en::{EncodeSeq, Encoder, IntoStream, ToStream};
 use futures::TryFutureExt;
 
 use super::{
-    Boolean, Complex, Float, Int, Number, NumberVisitor, UInt, _Complex, ERR_COMPLEX, ERR_NUMBER,
+    _Complex, Boolean, Complex, Float, Int, Number, NumberVisitor, UInt, ERR_COMPLEX, ERR_NUMBER,
 };
 
 impl FromStream for Boolean {
