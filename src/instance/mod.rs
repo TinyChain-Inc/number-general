@@ -7,7 +7,7 @@ use std::str::FromStr;
 
 use collate::Collate;
 use get_size::GetSize;
-use num::traits::Pow;
+use num::traits::{Pow, WrappingMul};
 use safecast::{CastFrom, CastInto};
 
 use super::class::{
@@ -17,6 +17,31 @@ use super::class::{
 use super::{_Complex, Error, Number};
 
 const ERR_COMPLEX_POWER: &str = "complex exponent is not yet supported";
+
+// Primitive powers accept u32 exponents; keep integral Number exponents at full width.
+fn wrapping_pow<T: Copy + num::One + WrappingMul>(mut base: T, mut exponent: u64) -> T {
+    let mut result = T::one();
+
+    while exponent != 0 {
+        if exponent & 1 != 0 {
+            result = result.wrapping_mul(&base);
+        }
+        exponent >>= 1;
+        if exponent != 0 {
+            base = base.wrapping_mul(&base);
+        }
+    }
+
+    result
+}
+
+fn integer_exponent(exponent: Number) -> u64 {
+    match exponent {
+        Number::Bool(_) | Number::Int(_) | Number::UInt(_) => u64::cast_from(exponent),
+        // Preserve the existing conversion for direct native noninteger exponents.
+        other => u64::from(u32::cast_from(other)),
+    }
+}
 
 macro_rules! fmt_debug {
     ($t:ty) => {
@@ -109,6 +134,18 @@ impl NumberInstance for Boolean {
     fn xor(self, other: Self) -> Self {
         Self(self.0 ^ other.0)
     }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        if !other.0 {
+            Err(Error::new("Boolean division by zero"))
+        } else {
+            Ok(self)
+        }
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        Ok(self.xor(other))
+    }
 }
 
 impl RealInstance for Boolean {
@@ -162,7 +199,7 @@ impl Rem for Boolean {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        self.xor(other)
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -210,11 +247,7 @@ impl Div for Boolean {
     type Output = Self;
 
     fn div(self, other: Self) -> Self::Output {
-        if let Self(false) = other {
-            panic!("divide by zero!")
-        } else {
-            self
-        }
+        self.try_div(other).expect("numeric div failed")
     }
 }
 
@@ -337,8 +370,8 @@ impl NumberInstance for Complex {
 
     fn abs(self) -> Float {
         match self {
-            Self::C32(c) => Float::F32(c.norm_sqr().sqrt()),
-            Self::C64(c) => Float::F64(c.norm_sqr().sqrt()),
+            Self::C32(c) => Float::F32(c.norm()),
+            Self::C64(c) => Float::F64(c.norm()),
         }
     }
 
@@ -391,6 +424,32 @@ impl NumberInstance for Complex {
             Self::C32(c) => Self::C32(_Complex::new(c.re.round(), c.im.round())),
             Self::C64(c) => Self::C64(_Complex::new(c.re.round(), c.im.round())),
         }
+    }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        Ok(match (self, other) {
+            (Self::C32(l), Self::C32(r)) => Self::C32(l / r),
+            (Self::C64(l), Self::C64(r)) => Self::C64(l / r),
+            (Self::C64(l), r) => {
+                let r: _Complex<f64> = r.into();
+                Self::C64(l / r)
+            }
+            (Self::C32(l), Self::C64(r)) => {
+                let l = _Complex::<f64>::new(l.re as f64, l.im as f64);
+                Self::C64(l / r)
+            }
+        })
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        Ok(match (self, other) {
+            (Self::C32(l), Self::C32(r)) => Self::C32(l - r),
+            (l, r) => {
+                let l: _Complex<f64> = l.into();
+                let r: _Complex<f64> = r.into();
+                Self::C64(l % r)
+            }
+        })
     }
 }
 
@@ -450,9 +509,8 @@ impl CastFrom<Number> for Complex {
 impl CastFrom<Complex> for Boolean {
     fn cast_from(c: Complex) -> Self {
         match c {
-            Complex::C32(c) if c.norm_sqr() == 0f32 => Self(false),
-            Complex::C64(c) if c.norm_sqr() == 0f64 => Self(false),
-            _ => Self(true),
+            Complex::C32(c) => Self(c.re != 0.0 || c.im != 0.0),
+            Complex::C64(c) => Self(c.re != 0.0 || c.im != 0.0),
         }
     }
 }
@@ -493,14 +551,7 @@ impl Rem for Complex {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        match (self, other) {
-            (Self::C32(l), Self::C32(r)) => Self::C32(l - r),
-            (l, r) => {
-                let l: _Complex<f64> = l.into();
-                let r: _Complex<f64> = r.into();
-                Self::C64(l % r)
-            }
-        }
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -563,18 +614,7 @@ impl Div for Complex {
     type Output = Self;
 
     fn div(self, other: Complex) -> Self {
-        match (self, other) {
-            (Self::C32(l), Self::C32(r)) => Self::C32(l / r),
-            (Self::C64(l), Self::C64(r)) => Self::C64(l / r),
-            (Self::C64(l), r) => {
-                let r: _Complex<f64> = r.into();
-                Self::C64(l / r)
-            }
-            (Self::C32(l), Self::C64(r)) => {
-                let l = _Complex::<f64>::new(l.re as f64, l.im as f64);
-                Self::C64(l / r)
-            }
-        }
+        self.try_div(other).expect("numeric div failed")
     }
 }
 
@@ -633,11 +673,11 @@ impl Trigonometry for Complex {
 
 impl PartialEq for Complex {
     fn eq(&self, other: &Self) -> bool {
-        let l: _Complex<f32> = (*self).cast_into();
-        let r: _Complex<f32> = (*other).cast_into();
+        let l: _Complex<f64> = (*self).cast_into();
+        let r: _Complex<f64> = (*other).cast_into();
 
-        super::normalized_f32_bits(l.re) == super::normalized_f32_bits(r.re)
-            && super::normalized_f32_bits(l.im) == super::normalized_f32_bits(r.im)
+        super::normalized_f64_bits(l.re) == super::normalized_f64_bits(r.re)
+            && super::normalized_f64_bits(l.im) == super::normalized_f64_bits(r.im)
     }
 }
 
@@ -645,9 +685,9 @@ impl Eq for Complex {}
 
 impl Hash for Complex {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let c: _Complex<f32> = (*self).cast_into();
-        super::normalized_f32_bits(c.re).hash(state);
-        super::normalized_f32_bits(c.im).hash(state);
+        let c: _Complex<f64> = (*self).cast_into();
+        super::normalized_f64_bits(c.re).hash(state);
+        super::normalized_f64_bits(c.im).hash(state);
     }
 }
 
@@ -767,7 +807,12 @@ impl Collate for ComplexCollator {
     type Value = Complex;
 
     fn cmp(&self, left: &Self::Value, right: &Self::Value) -> Ordering {
-        self.float.cmp(&left.abs(), &right.abs())
+        let left: _Complex<f64> = (*left).into();
+        let right: _Complex<f64> = (*right).into();
+        self.float.cmp(
+            &Float::F64(left.re.hypot(left.im)),
+            &Float::F64(right.re.hypot(right.im)),
+        )
     }
 }
 
@@ -858,6 +903,24 @@ impl NumberInstance for Float {
             Self::F64(f) => (f.round() as i64).into(),
         }
     }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        Ok(match (self, other) {
+            (Self::F32(l), Self::F32(r)) => Self::F32(l / r),
+            (Self::F64(l), Self::F64(r)) => Self::F64(l / r),
+            (Self::F32(l), Self::F64(r)) => Self::F64((l as f64) / r),
+            (Self::F64(l), Self::F32(r)) => Self::F64(l / (r as f64)),
+        })
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        Ok(match (self, other) {
+            (Self::F64(l), Self::F64(r)) => Self::F64(l % r),
+            (Self::F32(l), Self::F32(r)) => Self::F32(l % r),
+            (Self::F64(l), Self::F32(r)) => Self::F64(l % r as f64),
+            (Self::F32(l), Self::F64(r)) => Self::F64(l as f64 % r),
+        })
+    }
 }
 
 impl RealInstance for Float {
@@ -939,12 +1002,7 @@ impl Rem for Float {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        match (self, other) {
-            (Self::F64(l), Self::F64(r)) => Self::F64(l % r),
-            (Self::F32(l), Self::F32(r)) => Self::F32(l % r),
-            (Self::F64(l), Self::F32(r)) => Self::F64(l % r as f64),
-            (Self::F32(l), Self::F64(r)) => Self::F64(l as f64 % r),
-        }
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -979,12 +1037,7 @@ impl Div for Float {
     type Output = Self;
 
     fn div(self, other: Self) -> Self::Output {
-        match (self, other) {
-            (Self::F32(l), Self::F32(r)) => Self::F32(l / r),
-            (Self::F64(l), Self::F64(r)) => Self::F64(l / r),
-            (Self::F32(l), Self::F64(r)) => Self::F64((l as f64) / r),
-            (Self::F64(l), Self::F32(r)) => Self::F64(l / (r as f64)),
-        }
+        self.try_div(other).expect("numeric div failed")
     }
 }
 
@@ -1043,19 +1096,23 @@ impl Trigonometry for Float {
 
 impl Hash for Float {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        super::normalized_f32_bits(f32::cast_from(*self)).hash(state);
+        super::normalized_f64_bits(f64::from(*self)).hash(state);
     }
 }
 
 impl PartialEq for Float {
     fn eq(&self, other: &Self) -> bool {
-        super::normalized_f32_bits(f32::cast_from(*self))
-            == super::normalized_f32_bits(f32::cast_from(*other))
+        super::normalized_f64_bits(f64::from(*self))
+            == super::normalized_f64_bits(f64::from(*other))
     }
 }
 
 impl PartialOrd for Float {
     fn partial_cmp(&self, other: &Float) -> Option<Ordering> {
+        if self == other {
+            return Some(Ordering::Equal);
+        }
+
         match (self, other) {
             (Float::F32(l), Float::F32(r)) => l.partial_cmp(r),
             (Float::F64(l), Float::F64(r)) => l.partial_cmp(r),
@@ -1167,55 +1224,21 @@ impl fmt::Display for Float {
     }
 }
 
+/// Defines a collation order for [`Float`]. NaNs compare equally, after other values.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
-struct F32Collator;
-
-impl Collate for F32Collator {
-    type Value = f32;
-
-    fn cmp(&self, left: &f32, right: &f32) -> Ordering {
-        if left == right {
-            Ordering::Equal
-        } else {
-            left.total_cmp(right)
-        }
-    }
-}
-
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
-struct F64Collator;
-
-impl Collate for F64Collator {
-    type Value = f64;
-
-    fn cmp(&self, left: &f64, right: &f64) -> Ordering {
-        if left == right {
-            Ordering::Equal
-        } else {
-            left.total_cmp(right)
-        }
-    }
-}
-
-/// Defines a collation order for [`Float`].
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
-pub struct FloatCollator {
-    f32: F32Collator,
-    f64: F64Collator,
-}
+pub struct FloatCollator;
 
 impl Collate for FloatCollator {
     type Value = Float;
 
     fn cmp(&self, left: &Self::Value, right: &Self::Value) -> Ordering {
+        // Float comparison already equates NaNs; an unordered pair has exactly one.
         if let Some(order) = left.partial_cmp(right) {
             order
+        } else if left.is_nan() {
+            Ordering::Greater
         } else {
-            match (left, right) {
-                (Float::F32(l), Float::F32(r)) => self.f32.cmp(l, r),
-                (Float::F64(l), Float::F64(r)) => self.f64.cmp(l, r),
-                (l, r) => self.f64.cmp(&(*l).cast_into(), &(*r).cast_into()),
-            }
+            Ordering::Less
         }
     }
 }
@@ -1227,6 +1250,13 @@ pub enum Int {
     I16(i16),
     I32(i32),
     I64(i64),
+}
+
+impl Int {
+    fn promote(self, other: Self) -> (Self, Self) {
+        let dtype = Ord::max(self.class(), other.class());
+        (self.into_type(dtype), other.into_type(dtype))
+    }
 }
 
 impl NumberInstance for Int {
@@ -1278,10 +1308,10 @@ impl NumberInstance for Int {
 
     fn abs(self) -> Self {
         match self {
-            Self::I8(i) => Int::I8(i.abs()),
-            Self::I16(i) => Int::I16(i.abs()),
-            Self::I32(i) => Int::I32(i.abs()),
-            Self::I64(i) => Int::I64(i.abs()),
+            Self::I8(value) => Self::I8(value.wrapping_abs()),
+            Self::I16(value) => Self::I16(value.wrapping_abs()),
+            Self::I32(value) => Self::I32(value.wrapping_abs()),
+            Self::I64(value) => Self::I64(value.wrapping_abs()),
         }
     }
 
@@ -1302,20 +1332,62 @@ impl NumberInstance for Int {
     }
 
     fn pow(self, exp: Number) -> Self {
-        if exp < exp.class().zero() {
+        if exp < Number::from(0) {
+            if let Number::Int(exponent) = exp {
+                if self == self.class().one() {
+                    return self;
+                }
+
+                if i64::from(self) == -1 {
+                    return if i64::from(exponent) & 1 == 0 {
+                        self.class().one()
+                    } else {
+                        self
+                    };
+                }
+            }
             return self.class().zero();
         }
 
+        let exponent = integer_exponent(exp);
         match self {
-            Self::I8(this) => Self::I8(this.pow(exp.cast_into())),
-            Self::I16(this) => Self::I16(this.pow(exp.cast_into())),
-            Self::I32(this) => Self::I32(this.pow(exp.cast_into())),
-            Self::I64(this) => Self::I64(this.pow(exp.cast_into())),
+            Self::I8(value) => Self::I8(wrapping_pow(value, exponent)),
+            Self::I16(value) => Self::I16(wrapping_pow(value, exponent)),
+            Self::I32(value) => Self::I32(wrapping_pow(value, exponent)),
+            Self::I64(value) => Self::I64(wrapping_pow(value, exponent)),
         }
     }
 
     fn round(self) -> Self::Round {
         self
+    }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        if other == other.class().zero() {
+            return Err(Error::new("integer division by zero"));
+        }
+
+        Ok(match self.promote(other) {
+            (Self::I8(left), Self::I8(right)) => Self::I8(left.wrapping_div(right)),
+            (Self::I16(left), Self::I16(right)) => Self::I16(left.wrapping_div(right)),
+            (Self::I32(left), Self::I32(right)) => Self::I32(left.wrapping_div(right)),
+            (Self::I64(left), Self::I64(right)) => Self::I64(left.wrapping_div(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
+        })
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        if other == other.class().zero() {
+            return Err(Error::new("integer remainder by zero"));
+        }
+
+        Ok(match self.promote(other) {
+            (Self::I8(left), Self::I8(right)) => Self::I8(left.wrapping_rem(right)),
+            (Self::I16(left), Self::I16(right)) => Self::I16(left.wrapping_rem(right)),
+            (Self::I32(left), Self::I32(right)) => Self::I32(left.wrapping_rem(right)),
+            (Self::I64(left), Self::I64(right)) => Self::I64(left.wrapping_rem(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
+        })
     }
 }
 
@@ -1390,18 +1462,12 @@ impl Add for Int {
     type Output = Self;
 
     fn add(self, other: Int) -> Self {
-        match (self, other) {
-            (Self::I64(l), Self::I64(r)) => Self::I64(l + r),
-            (Self::I64(l), Self::I32(r)) => Self::I64(l + r as i64),
-            (Self::I64(l), Self::I16(r)) => Self::I64(l + r as i64),
-            (Self::I64(l), Self::I8(r)) => Self::I64(l + r as i64),
-            (Self::I32(l), Self::I32(r)) => Self::I32(l + r),
-            (Self::I32(l), Self::I16(r)) => Self::I32(l + r as i32),
-            (Self::I32(l), Self::I8(r)) => Self::I32(l + r as i32),
-            (Self::I16(l), Self::I16(r)) => Self::I16(l + r),
-            (Self::I16(l), Self::I8(r)) => Self::I16(l + r as i16),
-            (Self::I8(l), Self::I8(r)) => Self::I8(l + r),
-            (l, r) => r + l,
+        match self.promote(other) {
+            (Self::I8(left), Self::I8(right)) => Self::I8(left.wrapping_add(right)),
+            (Self::I16(left), Self::I16(right)) => Self::I16(left.wrapping_add(right)),
+            (Self::I32(left), Self::I32(right)) => Self::I32(left.wrapping_add(right)),
+            (Self::I64(left), Self::I64(right)) => Self::I64(left.wrapping_add(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -1417,24 +1483,7 @@ impl Rem for Int {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        match (self, other) {
-            (Self::I64(l), Self::I64(r)) => Self::I64(l % r),
-            (Self::I64(l), Self::I32(r)) => Self::I64(l % r as i64),
-            (Self::I64(l), Self::I16(r)) => Self::I64(l % r as i64),
-            (Self::I64(l), Self::I8(r)) => Self::I64(l % r as i64),
-            (Self::I32(l), Self::I64(r)) => Self::I64(l as i64 % r),
-            (Self::I32(l), Self::I32(r)) => Self::I32(l % r),
-            (Self::I32(l), Self::I16(r)) => Self::I32(l % r as i32),
-            (Self::I32(l), Self::I8(r)) => Self::I32(l % r as i32),
-            (Self::I16(l), Self::I64(r)) => Self::I64(l as i64 % r),
-            (Self::I16(l), Self::I32(r)) => Self::I32(l as i32 % r),
-            (Self::I16(l), Self::I16(r)) => Self::I16(l % r),
-            (Self::I16(l), Self::I8(r)) => Self::I16(l % r as i16),
-            (Self::I8(l), Self::I64(r)) => Self::I64(l as i64 % r),
-            (Self::I8(l), Self::I32(r)) => Self::I32(l as i32 % r),
-            (Self::I8(l), Self::I16(r)) => Self::I16(l as i16 % r),
-            (Self::I8(l), Self::I8(r)) => Self::I8(l % r),
-        }
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -1449,23 +1498,12 @@ impl Sub for Int {
     type Output = Self;
 
     fn sub(self, other: Int) -> Self {
-        match (self, other) {
-            (Self::I64(l), Self::I64(r)) => Self::I64(l - r),
-            (Self::I64(l), Self::I32(r)) => Self::I64(l - r as i64),
-            (Self::I64(l), Self::I16(r)) => Self::I64(l - r as i64),
-            (Self::I64(l), Self::I8(r)) => Self::I64(l - r as i64),
-            (Self::I32(l), Self::I64(r)) => Self::I64(l as i64 - r),
-            (Self::I32(l), Self::I32(r)) => Self::I32(l - r),
-            (Self::I32(l), Self::I16(r)) => Self::I32(l - r as i32),
-            (Self::I32(l), Self::I8(r)) => Self::I32(l - r as i32),
-            (Self::I16(l), Self::I64(r)) => Self::I64(l as i64 - r),
-            (Self::I16(l), Self::I32(r)) => Self::I32(l as i32 - r),
-            (Self::I16(l), Self::I16(r)) => Self::I16(l - r),
-            (Self::I16(l), Self::I8(r)) => Self::I16(l - r as i16),
-            (Self::I8(l), Self::I64(r)) => Self::I64(l as i64 - r),
-            (Self::I8(l), Self::I32(r)) => Self::I32(l as i32 - r),
-            (Self::I8(l), Self::I16(r)) => Self::I16(l as i16 - r),
-            (Self::I8(l), Self::I8(r)) => Self::I8(l - r),
+        match self.promote(other) {
+            (Self::I8(left), Self::I8(right)) => Self::I8(left.wrapping_sub(right)),
+            (Self::I16(left), Self::I16(right)) => Self::I16(left.wrapping_sub(right)),
+            (Self::I32(left), Self::I32(right)) => Self::I32(left.wrapping_sub(right)),
+            (Self::I64(left), Self::I64(right)) => Self::I64(left.wrapping_sub(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -1491,14 +1529,12 @@ impl Mul for Int {
     type Output = Self;
 
     fn mul(self, other: Int) -> Self {
-        match (self, other) {
-            (Self::I64(l), Self::I64(r)) => Self::I64(l * r),
-            (Self::I64(l), Self::I32(r)) => Self::I64(l * r as i64),
-            (Self::I64(l), Self::I16(r)) => Self::I64(l * r as i64),
-            (Self::I32(l), Self::I32(r)) => Self::I32(l * r),
-            (Self::I32(l), Self::I16(r)) => Self::I32(l * r as i32),
-            (Self::I16(l), Self::I16(r)) => Self::I16(l * r),
-            (l, r) => r * l,
+        match self.promote(other) {
+            (Self::I8(left), Self::I8(right)) => Self::I8(left.wrapping_mul(right)),
+            (Self::I16(left), Self::I16(right)) => Self::I16(left.wrapping_mul(right)),
+            (Self::I32(left), Self::I32(right)) => Self::I32(left.wrapping_mul(right)),
+            (Self::I64(left), Self::I64(right)) => Self::I64(left.wrapping_mul(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -1514,27 +1550,7 @@ impl Div for Int {
     type Output = Self;
 
     fn div(self, other: Int) -> Self {
-        match (self, other) {
-            (Self::I64(l), Self::I64(r)) => Self::I64(l / r),
-            (Self::I64(l), Self::I32(r)) => Self::I64(l / r as i64),
-            (Self::I64(l), Self::I16(r)) => Self::I64(l / r as i64),
-            (Self::I64(l), Self::I8(r)) => Self::I64(l / r as i64),
-
-            (Self::I32(l), Self::I64(r)) => Self::I64(l as i64 / r),
-            (Self::I32(l), Self::I32(r)) => Self::I32(l / r),
-            (Self::I32(l), Self::I16(r)) => Self::I32(l / r as i32),
-            (Self::I32(l), Self::I8(r)) => Self::I32(l / r as i32),
-
-            (Self::I16(l), Self::I64(r)) => Self::I64(l as i64 / r),
-            (Self::I16(l), Self::I32(r)) => Self::I32(l as i32 / r),
-            (Self::I16(l), Self::I16(r)) => Self::I16(l / r),
-            (Self::I16(l), Self::I8(r)) => Self::I16(l / r as i16),
-
-            (Self::I8(l), Self::I64(r)) => Self::I64(l as i64 / r),
-            (Self::I8(l), Self::I32(r)) => Self::I32(l as i32 / r),
-            (Self::I8(l), Self::I16(r)) => Self::I16(l as i16 / r),
-            (Self::I8(l), Self::I8(r)) => Self::I8(l / r),
-        }
+        self.try_div(other).expect("numeric div failed")
     }
 }
 
@@ -1720,6 +1736,13 @@ pub enum UInt {
     U64(u64),
 }
 
+impl UInt {
+    fn promote(self, other: Self) -> (Self, Self) {
+        let dtype = Ord::max(self.class(), other.class());
+        (self.into_type(dtype), other.into_type(dtype))
+    }
+}
+
 impl NumberInstance for UInt {
     type Abs = Self;
     type Exp = Float;
@@ -1789,19 +1812,53 @@ impl NumberInstance for UInt {
 
     fn pow(self, exp: Number) -> Self {
         if exp < Number::from(0) {
+            if let Number::Int(_) = exp {
+                if self == self.class().one() {
+                    return self;
+                }
+            }
             return self.class().zero();
         }
 
+        let exponent = integer_exponent(exp);
         match self {
-            Self::U8(this) => Self::U8(this.pow(exp.cast_into())),
-            Self::U16(this) => Self::U16(this.pow(exp.cast_into())),
-            Self::U32(this) => Self::U32(this.pow(exp.cast_into())),
-            Self::U64(this) => Self::U64(this.pow(exp.cast_into())),
+            Self::U8(value) => Self::U8(wrapping_pow(value, exponent)),
+            Self::U16(value) => Self::U16(wrapping_pow(value, exponent)),
+            Self::U32(value) => Self::U32(wrapping_pow(value, exponent)),
+            Self::U64(value) => Self::U64(wrapping_pow(value, exponent)),
         }
     }
 
     fn round(self) -> Self::Round {
         self
+    }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        if other == other.class().zero() {
+            return Err(Error::new("integer division by zero"));
+        }
+
+        Ok(match self.promote(other) {
+            (Self::U8(left), Self::U8(right)) => Self::U8(left.wrapping_div(right)),
+            (Self::U16(left), Self::U16(right)) => Self::U16(left.wrapping_div(right)),
+            (Self::U32(left), Self::U32(right)) => Self::U32(left.wrapping_div(right)),
+            (Self::U64(left), Self::U64(right)) => Self::U64(left.wrapping_div(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
+        })
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        if other == other.class().zero() {
+            return Err(Error::new("integer remainder by zero"));
+        }
+
+        Ok(match self.promote(other) {
+            (Self::U8(left), Self::U8(right)) => Self::U8(left.wrapping_rem(right)),
+            (Self::U16(left), Self::U16(right)) => Self::U16(left.wrapping_rem(right)),
+            (Self::U32(left), Self::U32(right)) => Self::U32(left.wrapping_rem(right)),
+            (Self::U64(left), Self::U64(right)) => Self::U64(left.wrapping_rem(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
+        })
     }
 }
 
@@ -1889,18 +1946,12 @@ impl Add for UInt {
     type Output = Self;
 
     fn add(self, other: UInt) -> Self {
-        match (self, other) {
-            (UInt::U64(l), UInt::U64(r)) => UInt::U64(l + r),
-            (UInt::U64(l), UInt::U32(r)) => UInt::U64(l + r as u64),
-            (UInt::U64(l), UInt::U16(r)) => UInt::U64(l + r as u64),
-            (UInt::U64(l), UInt::U8(r)) => UInt::U64(l + r as u64),
-            (UInt::U32(l), UInt::U32(r)) => UInt::U32(l + r),
-            (UInt::U32(l), UInt::U16(r)) => UInt::U32(l + r as u32),
-            (UInt::U32(l), UInt::U8(r)) => UInt::U32(l + r as u32),
-            (UInt::U16(l), UInt::U16(r)) => UInt::U16(l + r),
-            (UInt::U16(l), UInt::U8(r)) => UInt::U16(l + r as u16),
-            (UInt::U8(l), UInt::U8(r)) => UInt::U8(l + r),
-            (l, r) => r + l,
+        match self.promote(other) {
+            (Self::U8(left), Self::U8(right)) => Self::U8(left.wrapping_add(right)),
+            (Self::U16(left), Self::U16(right)) => Self::U16(left.wrapping_add(right)),
+            (Self::U32(left), Self::U32(right)) => Self::U32(left.wrapping_add(right)),
+            (Self::U64(left), Self::U64(right)) => Self::U64(left.wrapping_add(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -1916,29 +1967,7 @@ impl Rem for UInt {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        match (self, other) {
-            (UInt::U64(l), UInt::U64(r)) => UInt::U64(l % r),
-            (UInt::U64(l), UInt::U32(r)) => UInt::U64(l % r as u64),
-            (UInt::U64(l), UInt::U16(r)) => UInt::U64(l % r as u64),
-            (UInt::U64(l), UInt::U8(r)) => UInt::U64(l % r as u64),
-            (UInt::U32(l), UInt::U32(r)) => UInt::U32(l % r),
-            (UInt::U32(l), UInt::U16(r)) => UInt::U32(l % r as u32),
-            (UInt::U32(l), UInt::U8(r)) => UInt::U32(l % r as u32),
-            (UInt::U16(l), UInt::U16(r)) => UInt::U16(l % r),
-            (UInt::U16(l), UInt::U8(r)) => UInt::U16(l % r as u16),
-            (UInt::U8(l), UInt::U8(r)) => UInt::U8(l % r),
-            (UInt::U8(l), UInt::U16(r)) => UInt::U16(l as u16 % r),
-            (UInt::U8(l), UInt::U32(r)) => UInt::U32(l as u32 % r),
-            (UInt::U8(l), UInt::U64(r)) => UInt::U64(l as u64 % r),
-            (UInt::U16(l), r) => {
-                let r: u64 = r.into();
-                UInt::U16(l % r as u16)
-            }
-            (UInt::U32(l), r) => {
-                let r: u64 = r.into();
-                UInt::U32(l % r as u32)
-            }
-        }
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -1946,28 +1975,12 @@ impl Sub for UInt {
     type Output = Self;
 
     fn sub(self, other: UInt) -> Self {
-        match (self, other) {
-            (UInt::U64(l), UInt::U64(r)) => UInt::U64(l - r),
-            (UInt::U64(l), UInt::U32(r)) => UInt::U64(l - r as u64),
-            (UInt::U64(l), UInt::U16(r)) => UInt::U64(l - r as u64),
-            (UInt::U64(l), UInt::U8(r)) => UInt::U64(l - r as u64),
-            (UInt::U32(l), UInt::U32(r)) => UInt::U32(l - r),
-            (UInt::U32(l), UInt::U16(r)) => UInt::U32(l - r as u32),
-            (UInt::U32(l), UInt::U8(r)) => UInt::U32(l - r as u32),
-            (UInt::U16(l), UInt::U16(r)) => UInt::U16(l - r),
-            (UInt::U16(l), UInt::U8(r)) => UInt::U16(l - r as u16),
-            (UInt::U8(l), UInt::U8(r)) => UInt::U8(l - r),
-            (UInt::U8(l), UInt::U16(r)) => UInt::U16(l as u16 - r),
-            (UInt::U8(l), UInt::U32(r)) => UInt::U32(l as u32 - r),
-            (UInt::U8(l), UInt::U64(r)) => UInt::U64(l as u64 - r),
-            (UInt::U16(l), r) => {
-                let r: u64 = r.into();
-                UInt::U16(l - r as u16)
-            }
-            (UInt::U32(l), r) => {
-                let r: u64 = r.into();
-                UInt::U32(l - r as u32)
-            }
+        match self.promote(other) {
+            (Self::U8(left), Self::U8(right)) => Self::U8(left.wrapping_sub(right)),
+            (Self::U16(left), Self::U16(right)) => Self::U16(left.wrapping_sub(right)),
+            (Self::U32(left), Self::U32(right)) => Self::U32(left.wrapping_sub(right)),
+            (Self::U64(left), Self::U64(right)) => Self::U64(left.wrapping_sub(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -1993,18 +2006,12 @@ impl Mul for UInt {
     type Output = Self;
 
     fn mul(self, other: UInt) -> Self {
-        match (self, other) {
-            (UInt::U64(l), UInt::U64(r)) => UInt::U64(l * r),
-            (UInt::U64(l), UInt::U32(r)) => UInt::U64(l * r as u64),
-            (UInt::U64(l), UInt::U16(r)) => UInt::U64(l * r as u64),
-            (UInt::U64(l), UInt::U8(r)) => UInt::U64(l * r as u64),
-            (UInt::U32(l), UInt::U32(r)) => UInt::U32(l * r),
-            (UInt::U32(l), UInt::U16(r)) => UInt::U32(l * r as u32),
-            (UInt::U32(l), UInt::U8(r)) => UInt::U32(l * r as u32),
-            (UInt::U16(l), UInt::U16(r)) => UInt::U16(l * r),
-            (UInt::U16(l), UInt::U8(r)) => UInt::U16(l * r as u16),
-            (UInt::U8(l), UInt::U8(r)) => UInt::U8(l * r),
-            (l, r) => r * l,
+        match self.promote(other) {
+            (Self::U8(left), Self::U8(right)) => Self::U8(left.wrapping_mul(right)),
+            (Self::U16(left), Self::U16(right)) => Self::U16(left.wrapping_mul(right)),
+            (Self::U32(left), Self::U32(right)) => Self::U32(left.wrapping_mul(right)),
+            (Self::U64(left), Self::U64(right)) => Self::U64(left.wrapping_mul(right)),
+            _ => unreachable!("integer operands have the same promoted width"),
         }
     }
 }
@@ -2020,27 +2027,7 @@ impl Div for UInt {
     type Output = Self;
 
     fn div(self, other: UInt) -> Self {
-        match (self, other) {
-            (UInt::U64(l), UInt::U64(r)) => UInt::U64(l / r),
-            (UInt::U64(l), UInt::U32(r)) => UInt::U64(l / r as u64),
-            (UInt::U64(l), UInt::U16(r)) => UInt::U64(l / r as u64),
-            (UInt::U64(l), UInt::U8(r)) => UInt::U64(l / r as u64),
-
-            (UInt::U32(l), UInt::U64(r)) => UInt::U64(l as u64 / r),
-            (UInt::U32(l), UInt::U32(r)) => UInt::U32(l / r),
-            (UInt::U32(l), UInt::U16(r)) => UInt::U32(l / r as u32),
-            (UInt::U32(l), UInt::U8(r)) => UInt::U32(l / r as u32),
-
-            (UInt::U16(l), UInt::U64(r)) => UInt::U64(l as u64 / r),
-            (UInt::U16(l), UInt::U32(r)) => UInt::U32(l as u32 / r),
-            (UInt::U16(l), UInt::U16(r)) => UInt::U16(l / r),
-            (UInt::U16(l), UInt::U8(r)) => UInt::U16(l / r as u16),
-
-            (UInt::U8(l), UInt::U64(r)) => UInt::U64(l as u64 / r),
-            (UInt::U8(l), UInt::U32(r)) => UInt::U32(l as u32 / r),
-            (UInt::U8(l), UInt::U16(r)) => UInt::U16(l as u16 / r),
-            (UInt::U8(l), UInt::U8(r)) => UInt::U8(l / r),
-        }
+        self.try_div(other).expect("numeric div failed")
     }
 }
 

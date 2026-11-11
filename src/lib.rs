@@ -27,7 +27,7 @@ use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Rem, RemAssign, Sub, SubAssign};
 use std::str::FromStr;
 
-use collate::{Collate, Collator};
+use collate::Collate;
 use get_size::GetSize;
 use safecast::{CastFrom, CastInto};
 
@@ -49,16 +49,36 @@ const ERR_COMPLEX: &str = "a complex number";
 #[cfg(any(feature = "serde", feature = "stream"))]
 const ERR_NUMBER: &str = "a Number, like 1 or -2 or 3.14 or [0., -1.414]";
 
-const CANONICAL_NAN32_BITS: u32 = 0x7fc0_0000;
-
 #[inline]
-fn normalized_f32_bits(f: f32) -> u32 {
+fn normalized_f64_bits(f: f64) -> u64 {
     if f == 0.0 {
         0
     } else if f.is_nan() {
-        CANONICAL_NAN32_BITS
+        f64::NAN.to_bits()
     } else {
         f.to_bits()
+    }
+}
+
+// Exactly 2^64, beyond the magnitude of every supported integer representation.
+const INTEGER_BOUND_EXCLUSIVE: f64 = (u64::MAX as u128 + 1) as f64;
+
+// Integer representations fit exactly in i128. Floating comparisons truncate only
+// after checking their range, and compare the remaining fraction separately.
+fn cmp_float_integer(float: f64, integer: i128) -> Option<Ordering> {
+    if float.is_nan() {
+        return None;
+    }
+    if float >= INTEGER_BOUND_EXCLUSIVE {
+        return Some(Ordering::Greater);
+    }
+    if float <= -INTEGER_BOUND_EXCLUSIVE {
+        return Some(Ordering::Less);
+    }
+
+    match (float as i128).cmp(&integer) {
+        Ordering::Equal => float.fract().partial_cmp(&0.0),
+        order => Some(order),
     }
 }
 
@@ -97,7 +117,8 @@ dtype!(_Complex<f64>, NumberType::Complex(ComplexType::C64));
 pub struct Error(String);
 
 impl Error {
-    fn new<E: fmt::Display>(cause: E) -> Self {
+    /// Construct an error for a recoverable numeric operation failure.
+    pub fn new<E: fmt::Display>(cause: E) -> Self {
         Self(cause.to_string())
     }
 }
@@ -143,6 +164,47 @@ impl Number {
     pub fn is_real(&self) -> bool {
         !matches!(self, Self::Complex(_))
     }
+}
+
+macro_rules! number_binop {
+    ($lhs:expr, $rhs:expr, |$left:ident, $right:ident| $operation:expr) => {{
+        let lhs = $lhs;
+        let rhs = $rhs;
+        let dtype = Ord::max(lhs.class(), rhs.class());
+
+        use NumberType as NT;
+
+        match dtype {
+            NT::Bool => {
+                let $left: Boolean = lhs.cast_into();
+                let $right: Boolean = rhs.cast_into();
+                $operation
+            }
+            NT::Complex(_) => {
+                let $left: Complex = lhs.cast_into();
+                let $right: Complex = rhs.cast_into();
+                $operation
+            }
+            NT::Float(_) => {
+                let $left: Float = lhs.cast_into();
+                let $right: Float = rhs.cast_into();
+                $operation
+            }
+            NT::Int(_) => {
+                let $left: Int = lhs.cast_into();
+                let $right: Int = rhs.cast_into();
+                $operation
+            }
+            NT::UInt(_) => {
+                let $left: UInt = lhs.cast_into();
+                let $right: UInt = rhs.cast_into();
+                $operation
+            }
+            NT::Number => {
+                unreachable!("a Number instance must have a specific type, not NumberType::Number")
+            }
+        }
+    }};
 }
 
 impl NumberInstance for Number {
@@ -260,6 +322,18 @@ impl NumberInstance for Number {
             other => other,
         }
     }
+
+    fn try_div(self, other: Self) -> Result<Self, Error> {
+        number_binop!(self, other, |left, right| left
+            .try_div(right)
+            .map(Self::from))
+    }
+
+    fn try_rem(self, other: Self) -> Result<Self, Error> {
+        number_binop!(self, other, |left, right| left
+            .try_rem(right)
+            .map(Self::from))
+    }
 }
 
 impl FloatInstance for Number {
@@ -280,94 +354,86 @@ impl FloatInstance for Number {
     }
 }
 
+impl Number {
+    fn components(self) -> (Self, f64) {
+        if let Self::Complex(c) = self {
+            let c: num::Complex<f64> = c.into();
+            (Self::Float(c.re.into()), c.im)
+        } else {
+            (self, 0.0)
+        }
+    }
+
+    fn integer(self) -> i128 {
+        match self {
+            Self::Bool(b) => i128::from(bool::from(b)),
+            Self::Int(i) => i64::from(i) as i128,
+            Self::UInt(u) => u64::from(u) as i128,
+            _ => unreachable!("real integer comparison requires an integer"),
+        }
+    }
+
+    fn cmp_real(self, other: Self) -> Option<Ordering> {
+        match (self, other) {
+            (Self::Float(l), Self::Float(r)) => l.partial_cmp(&r),
+            (Self::Float(l), r) => cmp_float_integer(f64::from(l), r.integer()),
+            (l, Self::Float(r)) => {
+                cmp_float_integer(f64::from(r), l.integer()).map(Ordering::reverse)
+            }
+            (l, r) => Some(l.integer().cmp(&r.integer())),
+        }
+    }
+}
+
 impl PartialEq for Number {
     fn eq(&self, other: &Self) -> bool {
-        let dtype = Ord::max(self.class(), other.class());
-        let l = (*self).into_type(dtype);
-        let r = (*other).into_type(dtype);
-
-        match (l, r) {
-            (Self::Bool(l), Self::Bool(r)) => l.eq(&r),
-            (Self::Complex(l), Self::Complex(r)) => l.eq(&r),
-            (Self::Float(l), Self::Float(r)) => l.eq(&r),
-            (Self::Int(l), Self::Int(r)) => l.eq(&r),
-            (Self::UInt(l), Self::UInt(r)) => l.eq(&r),
-            _ => {
-                unreachable!("a Number instance must have a specific type, not NumberType::Number")
-            }
-        }
+        let (l, li) = self.components();
+        let (r, ri) = other.components();
+        normalized_f64_bits(li) == normalized_f64_bits(ri) && l.cmp_real(r) == Some(Ordering::Equal)
     }
 }
 
 impl Hash for Number {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        let c: _Complex<f32> = Complex::cast_from(*self).cast_into();
-        normalized_f32_bits(c.re).hash(state);
-        normalized_f32_bits(c.im).hash(state);
+        let (real, imaginary) = self.components();
+        if let Self::Float(f) = real {
+            let f = f64::from(f);
+            if f > -INTEGER_BOUND_EXCLUSIVE && f < INTEGER_BOUND_EXCLUSIVE && f.fract() == 0.0 {
+                0u8.hash(state);
+                (f as i128).hash(state);
+            } else {
+                1u8.hash(state);
+                normalized_f64_bits(f).hash(state);
+            }
+        } else {
+            0u8.hash(state);
+            real.integer().hash(state);
+        }
+        normalized_f64_bits(imaginary).hash(state);
     }
 }
 
 impl PartialOrd for Number {
     fn partial_cmp(&self, other: &Number) -> Option<Ordering> {
-        match (self, other) {
-            (Self::Int(l), Self::Int(r)) => l.partial_cmp(r),
-            (Self::UInt(l), Self::UInt(r)) => l.partial_cmp(r),
-            (Self::Float(l), Self::Float(r)) => l.partial_cmp(r),
-            (Self::Bool(l), Self::Bool(r)) => l.partial_cmp(r),
-            (Self::Complex(_), _) => None,
-            (_, Self::Complex(_)) => None,
+        if self == other {
+            return Some(Ordering::Equal);
+        }
 
-            (l, r) => {
-                let dtype = Ord::max(l.class(), r.class());
-                let l = l.into_type(dtype);
-                let r = r.into_type(dtype);
-                l.partial_cmp(&r)
-            }
+        let (l, li) = self.components();
+        let (r, ri) = other.components();
+        if li == 0.0 && ri == 0.0 {
+            l.cmp_real(r)
+        } else {
+            None
         }
     }
-}
-
-macro_rules! number_binop {
-    ($lhs:expr, $rhs:expr, $op:tt) => {{
-        let lhs = $lhs;
-        let rhs = $rhs;
-        let dtype = Ord::max(lhs.class(), rhs.class());
-
-        use NumberType as NT;
-
-        match dtype {
-            NT::Bool => {
-                let lhs: Boolean = lhs.cast_into();
-                (lhs $op rhs.cast_into()).into()
-            }
-            NT::Complex(_) => {
-                let lhs: Complex = lhs.cast_into();
-                (lhs $op rhs.cast_into()).into()
-            }
-            NT::Float(_) => {
-                let lhs: Float = lhs.cast_into();
-                (lhs $op rhs.cast_into()).into()
-            }
-            NT::Int(_) => {
-                let lhs: Int = lhs.cast_into();
-                (lhs $op rhs.cast_into()).into()
-            }
-            NT::UInt(_) => {
-                let lhs: UInt = lhs.cast_into();
-                (lhs $op rhs.cast_into()).into()
-            }
-            NT::Number => unreachable!(
-                "a Number instance must have a specific type, not NumberType::Number"
-            ),
-        }
-    }};
 }
 
 impl Add for Number {
     type Output = Self;
 
     fn add(self, other: Number) -> Self {
-        number_binop!(self, other, +)
+        number_binop!(self, other, |left, right| (left + right).into())
     }
 }
 
@@ -382,7 +448,7 @@ impl Rem for Number {
     type Output = Self;
 
     fn rem(self, other: Self) -> Self::Output {
-        number_binop!(self, other, %)
+        self.try_rem(other).expect("numeric rem failed")
     }
 }
 
@@ -397,7 +463,7 @@ impl Sub for Number {
     type Output = Self;
 
     fn sub(self, other: Number) -> Self {
-        number_binop!(self, other, -)
+        number_binop!(self, other, |left, right| (left - right).into())
     }
 }
 
@@ -422,7 +488,7 @@ impl Mul for Number {
     type Output = Self;
 
     fn mul(self, other: Number) -> Self {
-        number_binop!(self, other, *)
+        number_binop!(self, other, |left, right| (left * right).into())
     }
 }
 
@@ -437,7 +503,7 @@ impl Div for Number {
     type Output = Self;
 
     fn div(self, other: Number) -> Self {
-        number_binop!(self, other, /)
+        self.try_div(other).expect("numeric div failed")
     }
 }
 
@@ -610,25 +676,18 @@ impl FromStr for Number {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.trim();
-        let bytes = s.as_bytes();
 
         if s.is_empty() {
             Err(Error(
                 "cannot parse a Number from an empty string".to_string(),
             ))
-        } else if bytes.len() == 1 {
-            Int::from_str(s).map(Self::from)
-        } else if bytes
-            .windows(2)
-            .any(|w| matches!(w, [b'e' | b'E', b'+' | b'-']))
-        {
-            Float::from_str(s).map(Self::from)
-        } else if bytes.iter().skip(1).any(|b| matches!(b, b'+' | b'-')) {
-            Complex::from_str(s).map(Self::from)
-        } else if bytes.contains(&b'.') || bytes.iter().any(|b| matches!(b, b'e' | b'E')) {
-            Float::from_str(s).map(Self::from)
         } else {
-            Int::from_str(s).map(Self::from)
+            Int::from_str(s)
+                .map(Self::from)
+                .or_else(|_| UInt::from_str(s).map(Self::from))
+                .or_else(|_| Float::from_str(s).map(Self::from))
+                .or_else(|_| Complex::from_str(s).map(Self::from))
+                .or_else(|_| Boolean::from_str(s).map(Self::from))
         }
     }
 }
@@ -668,6 +727,7 @@ impl CastFrom<Number> for f32 {
         Float::cast_from(n).cast_into()
     }
 }
+
 impl CastFrom<Number> for f64 {
     fn cast_from(n: Number) -> f64 {
         Float::cast_from(n).cast_into()
@@ -770,29 +830,28 @@ impl CastFrom<Number> for UInt {
 /// Defines a collation order for [`Number`].
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct NumberCollator {
-    bool: Collator<Boolean>,
     complex: ComplexCollator,
-    float: FloatCollator,
-    int: Collator<Int>,
-    uint: Collator<UInt>,
 }
 
 impl Collate for NumberCollator {
     type Value = Number;
 
     fn cmp(&self, left: &Self::Value, right: &Self::Value) -> Ordering {
-        match (left, right) {
-            (Number::Bool(l), Number::Bool(r)) => self.bool.cmp(l, r),
-            (Number::Complex(l), Number::Complex(r)) => self.complex.cmp(l, r),
-            (Number::Float(l), Number::Float(r)) => self.float.cmp(l, r),
-            (Number::Int(l), Number::Int(r)) => self.int.cmp(l, r),
-            (Number::UInt(l), Number::UInt(r)) => self.uint.cmp(l, r),
-            (l, r) => {
-                let dtype = Ord::max(l.class(), r.class());
-                let l = l.into_type(dtype);
-                let r = r.into_type(dtype);
-                self.cmp(&l, &r)
-            }
+        let (l, li) = left.components();
+        let (r, ri) = right.components();
+        match (li == 0.0, ri == 0.0) {
+            (true, true) => l.cmp_real(r).unwrap_or_else(|| {
+                if l.is_nan() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => self
+                .complex
+                .cmp(&Complex::cast_from(*left), &Complex::cast_from(*right)),
         }
     }
 }
@@ -951,6 +1010,39 @@ mod tests {
     #[test]
     #[allow(clippy::approx_constant)] // tests use explicit literals to validate parsing
     fn test_parse() {
+        for value in [
+            Number::from(u64::MAX),
+            Number::from(i64::MIN),
+            Number::from(true),
+            Number::from(false),
+        ] {
+            assert_eq!(Number::from_str(&value.to_string()).unwrap(), value);
+        }
+        assert!(matches!(Number::from_str("12").unwrap(), Number::Int(_)));
+        assert!(matches!(
+            Number::from_str(&u64::MAX.to_string()).unwrap(),
+            Number::UInt(_)
+        ));
+        for (text, value) in [
+            ("1e+2+3i", num::Complex::new(100., 3.)),
+            ("1e-2+3i", num::Complex::new(0.01, 3.)),
+            ("1+2e-3i", num::Complex::new(1., 0.002)),
+            ("3i", num::Complex::new(0., 3.)),
+            (" -2i ", num::Complex::new(0., -2.)),
+        ] {
+            assert_eq!(Number::from_str(text).unwrap(), Number::from(value));
+        }
+
+        for invalid in [
+            "",
+            " ",
+            "not-a-number",
+            "1e",
+            "1+xi",
+            "18446744073709551616x",
+        ] {
+            assert!(Number::from_str(invalid).is_err(), "{invalid}");
+        }
         assert_eq!(Number::from_str("12").unwrap(), Number::from(12));
         assert_eq!(Number::from_str("1e6").unwrap(), Number::from(1e6));
         assert_eq!(Number::from_str("1e-6").unwrap(), Number::from(1e-6));
@@ -971,3 +1063,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/numeric_contract.rs"]
+mod numeric_contract;

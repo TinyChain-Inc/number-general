@@ -8,7 +8,7 @@ use safecast::{CastFrom, CastInto};
 use serde::{Deserialize, Serialize};
 
 use super::instance::{Boolean, Complex, Float, Int, UInt};
-use super::{_Complex, Number};
+use super::{_Complex, Error, Number};
 
 /// Defines common properties of numeric types supported by [`Number`].
 pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
@@ -27,7 +27,7 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
         !self.is_complex()
     }
 
-    /// Return the maximum size of this type of [`Number`], in bits.
+    /// Return the maximum storage size of this type of [`Number`], in bytes.
     fn size(self) -> usize;
 
     /// Return `1` as an instance of this type.
@@ -71,6 +71,14 @@ pub trait NumberInstance:
         self,
         dtype: <Self as NumberInstance>::Class,
     ) -> <<Self as NumberInstance>::Class as NumberClass>::Instance;
+
+    /// Divide without panicking on an integer or Boolean zero divisor.
+    /// Floating and complex division retain their IEEE behavior.
+    fn try_div(self, other: Self) -> Result<Self, Error>;
+
+    /// Compute the remainder without panicking on an integer zero divisor.
+    /// Boolean remainder retains its logical XOR behavior.
+    fn try_rem(self, other: Self) -> Result<Self, Error>;
 
     /// Calculate the absolute value of this number.
     fn abs(self) -> Self::Abs;

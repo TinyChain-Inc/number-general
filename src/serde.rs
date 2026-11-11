@@ -37,8 +37,8 @@ impl Serialize for Complex {
         match self {
             Complex::C32(c) => {
                 let mut seq = s.serialize_seq(Some(2))?;
-                seq.serialize_element(&c.re)?;
-                seq.serialize_element(&c.im)?;
+                seq.serialize_element(&f64::from(c.re))?;
+                seq.serialize_element(&f64::from(c.im))?;
                 seq.end()
             }
             Complex::C64(c) => {
@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for Float {
 impl Serialize for Float {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
-            Float::F32(f) => s.serialize_f32(*f),
+            Float::F32(f) => s.serialize_f64(f64::from(*f)),
             Float::F64(f) => s.serialize_f64(*f),
         }
     }
