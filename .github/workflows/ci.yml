@@ -8,45 +8,27 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            command: cargo test --manifest-path Cargo.toml --verbose
+          - os: windows-latest
+            command: cargo test --manifest-path Cargo.toml --lib checked_contract::portable_
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Bootstrap local path dependencies
         shell: bash
-        run: |
-          set -euo pipefail
-
-          declare -A seen
-          queue=("$PWD")
-          seen["$PWD"]=1
-
-          while ((${#queue[@]})); do
-            dir="${queue[0]}"
-            queue=("${queue[@]:1}")
-
-            while IFS= read -r cargo; do
-              while IFS= read -r dep; do
-                [[ -n "$dep" ]] || continue
-                dep_dir="$(cd "$dir/.." && pwd)/$dep"
-
-                if [[ ! -d "$dep_dir" ]]; then
-                  echo "Cloning dependency repo: $dep"
-                  git clone --depth 1 "https://github.com/TinyChain-Inc/$dep.git" "$dep_dir"
-                fi
-
-                if [[ -z "${seen[$dep_dir]+x}" ]]; then
-                  queue+=("$dep_dir")
-                  seen["$dep_dir"]=1
-                fi
-              done < <(
-                grep -hoE 'path[[:space:]]*=[[:space:]]*"\.\./[^"]+"' "$cargo" \
-                  | sed -E 's/.*"\.\.\/([^"]+)".*/\1/' \
-                  | sort -u || true
-              )
-            done < <(find "$dir" -name Cargo.toml -type f)
-          done
+        run: bash .github/scripts/bootstrap-path-deps.sh
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -55,4 +37,34 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --verbose
+        run: ${{ matrix.command }}
+
+  wasm:
+    name: WASM build and Node smoke tests
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER: wasm-bindgen-test-runner
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/bootstrap-path-deps.sh
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build WASM libraries
+        run: |
+          cargo build --manifest-path Cargo.toml --lib --target wasm32-unknown-unknown
+          cargo build --manifest-path Cargo.toml --lib --target wasm32-unknown-unknown --features all
+      - name: Install source-matched WASM test runner
+        run: bash .github/scripts/install-wasm-runner.sh
+      - name: Run focused Node tests
+        run: |
+          cargo test --manifest-path Cargo.toml --test wasm --target wasm32-unknown-unknown
+          cargo test --manifest-path Cargo.toml --test wasm --target wasm32-unknown-unknown --features all
