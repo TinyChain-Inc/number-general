@@ -2,7 +2,70 @@
 //! and [`UInt`] variants, as well as a [`NumberCollator`], [`ComplexCollator`], and
 //! [`FloatCollator`] since these types do not implement [`Ord`].
 //!
-//! `Number` supports casting with [`safecast`].
+//! Checked numerical operations on [`NumberInstance`] and [`Trigonometry`] return
+//! classified [`Error`]s, including overflow and underflow. Ordinary floating-point
+//! operations use IEEE behavior; ordinary integers follow Rust overflow settings.
+//! Mixed signed/unsigned ordinary arithmetic checks the selected destination.
+//! [`Number::wrapping_add`] and the other `wrapping_*` methods make integer
+//! overflow behavior explicit while retaining numeric promotion. Explicit casts through [`safecast`],
+//! [`NumberClass::cast`], and [`NumberInstance::into_type`] remain lossy.
+//!
+//! Built-in checked real functions use pinned software math. Finite checked
+//! complex transcendentals support certified axis identities; other inputs return
+//! [`ErrorKind::Unsupported`] before evaluation. Portability requires the normal
+//! IEEE environment. NaN payloads are unspecified; pointer-sized conversions
+//! remain target-sized.
+//!
+//! Interoperability with `num::traits` delegates to these same contracts.
+//! `CheckedAdd`, `CheckedSub`, `CheckedMul`, and `CheckedDiv` return `Option`,
+//! discarding the error details retained by `try_*`. `Pow<Number>` uses ordinary
+//! powers; wrapping traits use the existing wrapping methods.
+//!
+//! `ConstZero` and `ConstOne` define canonical identities; `Zero` and `One`
+//! constructors return those constants. They use each enum's default dtype; setters
+//! preserve the receiver's dtype. Canonical identities can promote narrower
+//! operands under the usual rules. Qualify overlapping trait methods explicitly:
+//! ```
+//! use num::traits::{CheckedAdd, One, Pow};
+//! use number_general::Int;
+//!
+//! assert_eq!(CheckedAdd::checked_add(&Int::from(2i8), &Int::from(3i8)), Some(Int::from(5i8)));
+//! assert_eq!(Pow::pow(Int::from(2i8), 3u8.into()), Int::from(8i8));
+//! let mut value = Int::from(7i8);
+//! One::set_one(&mut value);
+//! assert_eq!(value, Int::from(1i8));
+//! ```
+//!
+//! Primitive adapters permit native truncation/rounding; strict casts remain separate:
+//! ```
+//! use num::traits::{FromPrimitive, ToPrimitive};
+//! use number_general::{ErrorKind, Float, Int, IntType, Number, NumberClass};
+//!
+//! assert_eq!(Float::from(1.5f64).to_i64(), Some(1));
+//! assert_eq!(Int::from_u8(7), Some(Int::I64(7)));
+//! assert_eq!(IntType::I64.try_cast(Number::from(1.5f64)).unwrap_err().kind(), ErrorKind::Unrepresentable);
+//! ```
+//!
+//! Unary operations have ordinary, checked and explicit wrapping contracts:
+//! ```
+//! use number_general::{ErrorKind, Number};
+//!
+//! let input = Number::from(u64::MAX);
+//! assert_eq!(input.try_neg().unwrap_err().kind(), ErrorKind::Underflow);
+//! assert_eq!(input.wrapping_neg(), Number::from(1i64));
+//! assert_eq!(Number::from(2i8).try_recip().unwrap(), Number::from(0.5f32));
+//! ```
+//!
+//! Unsigned ordinary negation and integer reciprocal are intentionally absent:
+//! ```compile_fail
+//! use number_general::UInt;
+//! let _ = -UInt::from(1u8);
+//! ```
+//!
+//! ```compile_fail
+//! use number_general::Int;
+//! let _ = Int::from(2i8).recip();
+//! ```
 //!
 //! For (de)serialization with `serde`, enable the `"serde"` feature.
 //!
@@ -19,6 +82,17 @@
 //! assert_eq!(expected, actual);
 //! assert_eq!(Int::cast_from(actual), Int::from(7));
 //! ```
+//!
+//! Choose the contract explicitly:
+//! ```
+//! use number_general::{ErrorKind, Number, NumberInstance};
+//!
+//! let max = Number::from(i8::MAX);
+//! let one = Number::from(1i8);
+//! assert_eq!(max.try_add(one).unwrap_err().kind(), ErrorKind::Overflow);
+//! assert_eq!(max.wrapping_add(one), Number::from(i8::MIN));
+//! assert!(f64::from(number_general::Float::from(1.) / 0.0.into()).is_infinite());
+//! ```
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -29,16 +103,22 @@ use std::str::FromStr;
 
 use collate::Collate;
 use get_size::GetSize;
+use num::traits::Pow;
 use safecast::{CastFrom, CastInto};
 
+mod checked;
 mod class;
 #[cfg(feature = "stream")]
 mod destream;
 #[cfg(feature = "hash")]
 mod hash;
 mod instance;
+mod native;
 #[cfg(feature = "serde")]
 mod serde;
+mod trait_impls;
+mod unary;
+mod wrapping;
 
 pub use class::*;
 pub use instance::*;
@@ -113,13 +193,41 @@ dtype!(f64, NumberType::Float(FloatType::F64));
 dtype!(_Complex<f32>, NumberType::Complex(ComplexType::C32));
 dtype!(_Complex<f64>, NumberType::Complex(ComplexType::C64));
 
-/// The error type returned when a `Number` operation fails recoverably.
-pub struct Error(String);
+/// A recoverable numeric failure category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorKind {
+    InvalidInput,
+    Overflow,
+    Underflow,
+    DivisionByZero,
+    Domain,
+    Unrepresentable,
+    Unsupported,
+}
+
+/// The error type returned when a numeric operation fails recoverably.
+pub struct Error {
+    kind: ErrorKind,
+    message: String,
+}
 
 impl Error {
-    /// Construct an error for a recoverable numeric operation failure.
+    /// Construct an ordinary input error, preserving its diagnostic.
     pub fn new<E: fmt::Display>(cause: E) -> Self {
-        Self(cause.to_string())
+        Self::with_kind(ErrorKind::InvalidInput, cause)
+    }
+
+    /// Construct a classified error for a checked numeric implementation.
+    pub fn with_kind<E: fmt::Display>(kind: ErrorKind, cause: E) -> Self {
+        Self {
+            kind,
+            message: cause.to_string(),
+        }
+    }
+
+    /// Inspect the failure without parsing diagnostic text.
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
     }
 }
 
@@ -127,13 +235,13 @@ impl std::error::Error for Error {}
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
@@ -167,47 +275,133 @@ impl Number {
 }
 
 macro_rules! number_binop {
-    ($lhs:expr, $rhs:expr, |$left:ident, $right:ident| $operation:expr) => {{
-        let lhs = $lhs;
-        let rhs = $rhs;
-        let dtype = Ord::max(lhs.class(), rhs.class());
+    ($lhs:expr, $rhs:expr, $method:ident, $signed:ident, $unsigned:ident) => {{
+        let left = $lhs;
+        let right = $rhs;
+        match checked::promote(left, right) {
+            NumberType::Bool => Boolean::cast_from(left)
+                .$method(Boolean::cast_from(right))
+                .map(Number::from),
+            NumberType::Int(dtype) => {
+                checked::$signed(left.integer(), right.integer(), dtype).map(Number::from)
+            }
+            NumberType::UInt(dtype) => {
+                checked::$unsigned(left.integer() as u128, right.integer() as u128, dtype)
+                    .map(Number::from)
+            }
+            dtype => match (checked::cast(left, dtype)?, checked::cast(right, dtype)?) {
+                (Number::Float(l), Number::Float(r)) => l.$method(r).map(Number::from),
+                (Number::Complex(l), Number::Complex(r)) => l.$method(r).map(Number::from),
+                _ => unreachable!("promoted family"),
+            },
+        }
+    }};
+}
 
-        use NumberType as NT;
-
-        match dtype {
-            NT::Bool => {
-                let $left: Boolean = lhs.cast_into();
-                let $right: Boolean = rhs.cast_into();
-                $operation
-            }
-            NT::Complex(_) => {
-                let $left: Complex = lhs.cast_into();
-                let $right: Complex = rhs.cast_into();
-                $operation
-            }
-            NT::Float(_) => {
-                let $left: Float = lhs.cast_into();
-                let $right: Float = rhs.cast_into();
-                $operation
-            }
-            NT::Int(_) => {
-                let $left: Int = lhs.cast_into();
-                let $right: Int = rhs.cast_into();
-                $operation
-            }
-            NT::UInt(_) => {
-                let $left: UInt = lhs.cast_into();
-                let $right: UInt = rhs.cast_into();
-                $operation
-            }
-            NT::Number => {
-                unreachable!("a Number instance must have a specific type, not NumberType::Number")
+macro_rules! ordinary_number_op {
+    ($left:expr, $right:expr, $op:tt, $try:ident) => {{
+        let left = $left;
+        let right = $right;
+        if matches!((left, right), (Number::Int(_), Number::UInt(_)) | (Number::UInt(_), Number::Int(_))) {
+            left.$try(right).expect("mixed integer arithmetic")
+        } else {
+            let dtype = checked::promote(left, right);
+            let left = checked::cast(left, dtype).expect("promotion");
+            let right = checked::cast(right, dtype).expect("promotion");
+            match (left, right) {
+                (Number::Bool(l), Number::Bool(r)) => Number::from(l $op r),
+                (Number::Int(l), Number::Int(r)) => Number::from(l $op r),
+                (Number::UInt(l), Number::UInt(r)) => Number::from(l $op r),
+                (Number::Float(l), Number::Float(r)) => Number::from(l $op r),
+                (Number::Complex(l), Number::Complex(r)) => Number::from(l $op r),
+                _ => unreachable!("promoted family"),
             }
         }
     }};
 }
 
+macro_rules! number_methods {
+    ($($name:ident => $out:ident),*) => {$(
+        fn $name(self) -> Self::$out {
+            match self {
+                Self::Bool(v) => v.$name().into(),
+                Self::Int(v) => v.$name().into(),
+                Self::UInt(v) => v.$name().into(),
+                Self::Float(v) => v.$name().into(),
+                Self::Complex(v) => v.$name().into(),
+            }
+        }
+    )*};
+}
+
+macro_rules! checked_number_methods {
+    ($($name:ident => $out:ident),*) => {$(
+        fn $name(self) -> Result<Self::$out, Error> {
+            match self {
+                Self::Bool(v) => v.$name().map(Self::from),
+                Self::Int(v) => v.$name().map(Self::from),
+                Self::UInt(v) => v.$name().map(Self::from),
+                Self::Float(v) => v.$name().map(Self::from),
+                Self::Complex(v) => v.$name().map(Self::from),
+            }
+        }
+    )*};
+}
+
+impl Pow<Number> for Number {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        if matches!(self, Self::Complex(_)) || matches!(exponent, Self::Complex(_)) {
+            let dtype = match checked::promote(self, exponent) {
+                NumberType::Complex(d) => d,
+                _ => unreachable!("complex"),
+            };
+            let Self::Complex(value) =
+                checked::cast(self, dtype.into()).expect("complex promotion")
+            else {
+                unreachable!("complex")
+            };
+            return value.pow(exponent).into();
+        }
+        if native::promotes_power(exponent) {
+            let Self::Float(value) =
+                checked::cast(self, native::power_float_type(self, exponent).into())
+                    .expect("float promotion")
+            else {
+                unreachable!("float")
+            };
+            return value.pow(exponent).into();
+        }
+        match self {
+            Self::Bool(v) => v.pow(exponent).into(),
+            Self::Int(v) => v.pow(exponent).into(),
+            Self::UInt(v) => v.pow(exponent).into(),
+            Self::Float(v) => v.pow(exponent).into(),
+            Self::Complex(_) => unreachable!("complex branch"),
+        }
+    }
+}
+
 impl NumberInstance for Number {
+    checked_number_methods!(try_abs => Abs, try_exp => Exp, try_ln => Log, try_round => Round);
+
+    number_methods!(abs => Abs, exp => Exp, ln => Log, round => Round);
+
+    fn log<N: NumberInstance>(self, base: N) -> Self::Log {
+        let base = base.into();
+        if matches!(self, Self::Complex(_)) || matches!(base, Self::Complex(_)) {
+            let dtype = checked::promote(self, base);
+            let Self::Complex(value) = checked::cast(self, dtype).expect("complex promotion")
+            else {
+                unreachable!("complex")
+            };
+            value.log(base).into()
+        } else {
+            crate::native::float::log(self, base).into()
+        }
+    }
+
     type Abs = Number;
     type Exp = Self;
     type Log = Self;
@@ -252,87 +446,54 @@ impl NumberInstance for Number {
         }
     }
 
-    fn abs(self) -> Number {
-        use Number::*;
-        match self {
-            Complex(c) => Float(c.abs()),
-            Float(f) => Float(f.abs()),
-            Int(i) => Int(i.abs()),
-            other => other,
-        }
+    fn try_add(self, other: Self) -> Result<Self, Error> {
+        number_binop!(self, other, try_add, add_signed, add_unsigned)
     }
 
-    fn exp(self) -> Self::Exp {
-        match self {
-            Self::Complex(this) => this.exp().into(),
-            Self::Float(this) => this.exp().into(),
-            this => Float::cast_from(this).exp().into(),
-        }
+    fn try_sub(self, other: Self) -> Result<Self, Error> {
+        number_binop!(self, other, try_sub, sub_signed, sub_unsigned)
     }
 
-    fn ln(self) -> Self::Log {
-        match self {
-            Self::Bool(b) => b.ln().into(),
-            Self::Complex(this) => this.ln().into(),
-            Self::Float(this) => this.ln().into(),
-            Self::Int(this) => this.ln().into(),
-            Self::UInt(this) => this.ln().into(),
-        }
-    }
-
-    fn log<N: NumberInstance>(self, base: N) -> Self::Log
-    where
-        Float: From<N>,
-    {
-        match self {
-            Self::Complex(this) => this.log(base).into(),
-            Self::Float(this) => this.log(base).into(),
-            this => Float::cast_from(this).log(base).into(),
-        }
-    }
-
-    fn pow(self, exp: Self) -> Self {
-        match self {
-            Self::Complex(this) => Self::Complex(this.pow(exp)),
-            Self::Float(this) => Self::Float(this.pow(exp)),
-            Self::Int(this) => match exp {
-                Self::Complex(exp) => Self::Float(Float::from(this).pow(exp.into())),
-                Self::Float(exp) => Self::Float(Float::from(this).pow(exp.into())),
-                Self::Int(exp) if exp < exp.class().zero() => {
-                    Self::Float(Float::from(this).pow(exp.into()))
-                }
-                exp => Self::Int(this.pow(exp)),
-            },
-            Self::UInt(this) => match exp {
-                Self::Complex(exp) => Self::Float(Float::from(this).pow(exp.into())),
-                Self::Float(exp) => Self::Float(Float::from(this).pow(exp.into())),
-                Self::Int(exp) if exp < exp.class().zero() => {
-                    Self::Float(Float::from(this).pow(exp.into()))
-                }
-                exp => Self::UInt(this.pow(exp)),
-            },
-            Self::Bool(b) => Self::Bool(b.pow(exp)),
-        }
-    }
-
-    fn round(self) -> Self::Round {
-        match self {
-            Self::Complex(c) => c.round().into(),
-            Self::Float(f) => f.round().into(),
-            other => other,
-        }
+    fn try_mul(self, other: Self) -> Result<Self, Error> {
+        number_binop!(self, other, try_mul, mul_signed, mul_unsigned)
     }
 
     fn try_div(self, other: Self) -> Result<Self, Error> {
-        number_binop!(self, other, |left, right| left
-            .try_div(right)
-            .map(Self::from))
+        number_binop!(self, other, try_div, div_signed, div_unsigned)
     }
 
     fn try_rem(self, other: Self) -> Result<Self, Error> {
-        number_binop!(self, other, |left, right| left
-            .try_rem(right)
-            .map(Self::from))
+        number_binop!(self, other, try_rem, rem_signed, rem_unsigned)
+    }
+
+    fn try_into_type(self, dtype: NumberType) -> Result<Self, Error> {
+        checked::into_type(self, dtype)
+    }
+
+    fn try_log<N: NumberInstance>(self, base: N) -> Result<Self::Log, Error> {
+        let base = base.into();
+        match self {
+            Self::Complex(value) => value.try_log(base).map(Self::from),
+            value => checked::log(value, base).map(Self::from),
+        }
+    }
+
+    fn try_pow(self, exponent: Number) -> Result<Self, Error> {
+        match self {
+            Self::Complex(value) => value.try_pow(exponent).map(Self::from),
+            Self::Float(value) => value.try_pow(exponent).map(Self::from),
+            value if native::promotes_power(exponent) => {
+                let Self::Float(value) =
+                    checked::cast(value, native::power_float_type(value, exponent).into())?
+                else {
+                    unreachable!("float conversion")
+                };
+                value.try_pow(exponent).map(Self::from)
+            }
+            Self::Bool(value) => value.try_pow(exponent).map(Self::from),
+            Self::Int(value) => value.try_pow(exponent).map(Self::from),
+            Self::UInt(value) => value.try_pow(exponent).map(Self::from),
+        }
     }
 }
 
@@ -432,8 +593,8 @@ impl PartialOrd for Number {
 impl Add for Number {
     type Output = Self;
 
-    fn add(self, other: Number) -> Self {
-        number_binop!(self, other, |left, right| (left + right).into())
+    fn add(self, other: Self) -> Self {
+        ordinary_number_op!(self, other, +, try_add)
     }
 }
 
@@ -447,8 +608,8 @@ impl AddAssign for Number {
 impl Rem for Number {
     type Output = Self;
 
-    fn rem(self, other: Self) -> Self::Output {
-        self.try_rem(other).expect("numeric rem failed")
+    fn rem(self, other: Self) -> Self {
+        ordinary_number_op!(self, other, %, try_rem)
     }
 }
 
@@ -462,8 +623,8 @@ impl RemAssign for Number {
 impl Sub for Number {
     type Output = Self;
 
-    fn sub(self, other: Number) -> Self {
-        number_binop!(self, other, |left, right| (left - right).into())
+    fn sub(self, other: Self) -> Self {
+        ordinary_number_op!(self, other, -, try_sub)
     }
 }
 
@@ -475,20 +636,19 @@ impl SubAssign for Number {
 }
 
 impl Sum for Number {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let mut sum = NumberType::Number.zero();
-        for i in iter {
-            sum += i;
-        }
-        sum
+    fn sum<I: Iterator<Item = Self>>(mut iter: I) -> Self {
+        let Some(first) = iter.next() else {
+            return Self::default().class().zero();
+        };
+        iter.fold(first, |a, b| a + b)
     }
 }
 
 impl Mul for Number {
     type Output = Self;
 
-    fn mul(self, other: Number) -> Self {
-        number_binop!(self, other, |left, right| (left * right).into())
+    fn mul(self, other: Self) -> Self {
+        ordinary_number_op!(self, other, *, try_mul)
     }
 }
 
@@ -502,8 +662,8 @@ impl MulAssign for Number {
 impl Div for Number {
     type Output = Self;
 
-    fn div(self, other: Number) -> Self {
-        self.try_div(other).expect("numeric div failed")
+    fn div(self, other: Self) -> Self {
+        ordinary_number_op!(self, other, /, try_div)
     }
 }
 
@@ -515,52 +675,20 @@ impl DivAssign for Number {
 }
 
 impl Product for Number {
-    fn product<I: Iterator<Item = Self>>(iter: I) -> Self {
-        let zero = NumberType::Number.zero();
-        let mut product = NumberType::Number.one();
-
-        for i in iter {
-            if i == zero {
-                return zero;
-            }
-
-            product *= i;
-        }
-        product
+    fn product<I: Iterator<Item = Self>>(mut iter: I) -> Self {
+        let Some(first) = iter.next() else {
+            return Self::default().class().one();
+        };
+        iter.fold(first, |a, b| a * b)
     }
 }
 
-macro_rules! trig {
-    ($fun:ident) => {
-        fn $fun(self) -> Self::Out {
-            match self {
-                Self::Bool(b) => b.$fun().into(),
-                Self::Complex(c) => c.$fun().into(),
-                Self::Float(f) => f.$fun().into(),
-                Self::Int(i) => i.$fun().into(),
-                Self::UInt(u) => u.$fun().into(),
-            }
-        }
-    };
-}
-
 impl Trigonometry for Number {
+    checked_number_methods!(try_asin => Out, try_sin => Out, try_sinh => Out, try_asinh => Out, try_acos => Out, try_cos => Out, try_cosh => Out, try_acosh => Out, try_atan => Out, try_tan => Out, try_tanh => Out, try_atanh => Out);
+
+    number_methods!(asin => Out, sin => Out, sinh => Out, asinh => Out, acos => Out, cos => Out, cosh => Out, acosh => Out, atan => Out, tan => Out, tanh => Out, atanh => Out);
+
     type Out = Self;
-
-    trig! {asin}
-    trig! {sin}
-    trig! {asinh}
-    trig! {sinh}
-
-    trig! {acos}
-    trig! {cos}
-    trig! {acosh}
-    trig! {cosh}
-
-    trig! {atan}
-    trig! {tan}
-    trig! {atanh}
-    trig! {tanh}
 }
 
 impl Default for Number {
@@ -678,16 +806,28 @@ impl FromStr for Number {
         let s = s.trim();
 
         if s.is_empty() {
-            Err(Error(
+            Err(Error::new(
                 "cannot parse a Number from an empty string".to_string(),
             ))
         } else {
-            Int::from_str(s)
-                .map(Self::from)
-                .or_else(|_| UInt::from_str(s).map(Self::from))
-                .or_else(|_| Float::from_str(s).map(Self::from))
-                .or_else(|_| Complex::from_str(s).map(Self::from))
-                .or_else(|_| Boolean::from_str(s).map(Self::from))
+            Int::from_str(s).map(Self::from).or_else(|signed_error| {
+                UInt::from_str(s).map(Self::from).or_else(|unsigned_error| {
+                    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+                    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                        let (kind, cause) = if s.starts_with('-') {
+                            (ErrorKind::Underflow, signed_error)
+                        } else {
+                            (ErrorKind::Overflow, unsigned_error)
+                        };
+                        return Err(Error::with_kind(kind, cause));
+                    }
+
+                    Float::from_str(s)
+                        .map(Self::from)
+                        .or_else(|_| Complex::from_str(s).map(Self::from))
+                        .or_else(|_| Boolean::from_str(s).map(Self::from))
+                })
+            })
         }
     }
 }
@@ -953,9 +1093,10 @@ mod tests {
     fn test_log() {
         let n = 1.23f32;
         assert_eq!(n.ln(), f32::cast_from(Number::from(n).ln()));
+        assert!((-n).ln().is_nan());
         assert_eq!(
-            (-n).ln().is_nan(),
-            f32::cast_from(Number::from(-n).ln()).is_nan()
+            Number::from(-n).try_ln().unwrap_err().kind(),
+            ErrorKind::Domain
         );
     }
 
@@ -1010,13 +1151,85 @@ mod tests {
     #[test]
     #[allow(clippy::approx_constant)] // tests use explicit literals to validate parsing
     fn test_parse() {
-        for value in [
-            Number::from(u64::MAX),
-            Number::from(i64::MIN),
-            Number::from(true),
-            Number::from(false),
+        // Text preserves numerical values for these forms, but does not encode dtype.
+        for (value, expected_type) in [
+            (Number::from(u64::MAX), NumberType::UInt(UIntType::U64)),
+            (Number::from(i64::MIN), NumberType::Int(IntType::I64)),
+            (Number::from(i64::MAX), NumberType::Int(IntType::I64)),
+            (Number::from(i8::MIN), NumberType::Int(IntType::I64)),
+            (Number::from(u16::MAX), NumberType::Int(IntType::I64)),
+            (Number::from(1u8), NumberType::Int(IntType::I64)),
+            (Number::from(1f32), NumberType::Int(IntType::I64)),
+            (Number::from(-0f32), NumberType::Int(IntType::I64)),
+            (Number::from(0.5f32), NumberType::Float(FloatType::F64)),
+            (Number::from(0.1f64), NumberType::Float(FloatType::F64)),
+            (
+                Number::from([1.25f32, -0.5]),
+                NumberType::Complex(ComplexType::C64),
+            ),
+            (
+                Number::from([1.25f64, -0.5]),
+                NumberType::Complex(ComplexType::C64),
+            ),
+            (Number::from(true), NumberType::Bool),
+            (Number::from(false), NumberType::Bool),
         ] {
-            assert_eq!(Number::from_str(&value.to_string()).unwrap(), value);
+            let parsed = Number::from_str(&value.to_string()).unwrap();
+            assert_eq!(parsed, value);
+            assert_eq!(parsed.class(), expected_type);
+        }
+        for overflow in [
+            (u64::MAX as u128 + 1).to_string(),
+            (u64::MAX as u128 + 2).to_string(),
+            format!("+{}", u64::MAX as u128 + 1),
+            format!("000{}", u64::MAX as u128 + 1),
+        ] {
+            assert_eq!(
+                Number::from_str(&overflow).unwrap_err().kind(),
+                ErrorKind::Overflow
+            );
+        }
+        for underflow in [
+            (i64::MIN as i128 - 1).to_string(),
+            (i128::MIN).to_string(),
+            format!("-000{}", i64::MAX as u128 + 2),
+        ] {
+            assert_eq!(
+                Number::from_str(&underflow).unwrap_err().kind(),
+                ErrorKind::Underflow
+            );
+        }
+        assert_eq!(
+            Number::from_str(&format!("+000{}", u64::MAX)).unwrap(),
+            Number::from(u64::MAX)
+        );
+        assert_eq!(
+            Number::from_str(&format!("-000{}", i64::MIN.unsigned_abs())).unwrap(),
+            Number::from(i64::MIN)
+        );
+        for suffix in [".0", "e-2", "e+2"] {
+            let text = format!("{}{suffix}", u64::MAX as u128 + 2);
+            let parsed = Number::from_str(&text).unwrap();
+            assert_eq!(parsed, Number::from(f64::from_str(&text).unwrap()));
+            assert!(matches!(parsed, Number::Float(_)));
+        }
+        let complex_text = format!("{}+2i", u64::MAX as u128 + 2);
+        assert_eq!(
+            Number::from_str(&complex_text).unwrap(),
+            Number::from(num::Complex::<f64>::from_str(&complex_text).unwrap())
+        );
+        for malformed in [
+            "184467440737095516160000000000x",
+            "+",
+            "-",
+            "+-1",
+            "--1",
+            "١٢",
+        ] {
+            assert_eq!(
+                Number::from_str(malformed).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
         }
         assert!(matches!(Number::from_str("12").unwrap(), Number::Int(_)));
         assert!(matches!(
@@ -1067,3 +1280,15 @@ mod tests {
 #[cfg(test)]
 #[path = "../tests/unit/numeric_contract.rs"]
 mod numeric_contract;
+
+#[cfg(test)]
+#[path = "../tests/unit/checked.rs"]
+mod checked_contract;
+
+#[cfg(test)]
+#[path = "../tests/unit/contracts.rs"]
+mod numerical_contracts;
+
+#[cfg(test)]
+#[path = "../tests/unit/num_traits.rs"]
+mod num_traits_contract;

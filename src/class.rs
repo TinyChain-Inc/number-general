@@ -3,12 +3,14 @@ use std::fmt;
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
+use num::traits::Pow;
 use safecast::{CastFrom, CastInto};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 use super::instance::{Boolean, Complex, Float, Int, UInt};
 use super::{_Complex, Error, Number};
+use crate::checked;
 
 /// Defines common properties of numeric types supported by [`Number`].
 pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
@@ -16,6 +18,9 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 
     /// Cast the given `Number` into an instance of this type.
     fn cast(&self, n: Number) -> Self::Instance;
+
+    /// Convert without losing range, fractions, or imaginary components.
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error>;
 
     /// Return `true` if this is a complex type.
     fn is_complex(&self) -> bool {
@@ -38,12 +43,31 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 }
 
 /// Defines common operations on numeric types supported by [`Number`].
+///
+/// Implementations supply both ordinary and checked numerical methods, including
+/// trigonometry through [`Trigonometry`]. Ordinary operations follow their native
+/// numerical contract; checked methods return structured errors. `into_type` is lossy.
+/// Ordinary power is supplied by the [`Pow<Number>`] supertrait; custom
+/// implementations provide that trait separately, while retaining `try_pow` here.
+///
+/// The removed power method is not an alternate entry point:
+/// ```compile_fail
+/// use number_general::{Int, Number, NumberInstance};
+/// let _ = <Int as NumberInstance>::pow(Int::from(2i8), Number::from(3u8));
+/// ```
+///
+/// Identity constants and predicates come from `num::traits` instead of the
+/// removed real-number trait:
+/// ```compile_fail
+/// use number_general::RealInstance;
+/// ```
 pub trait NumberInstance:
     Copy
     + Default
     + Sized
     + From<Boolean>
     + Into<Number>
+    + Pow<Number, Output = Self>
     + Add<Output = Self>
     + AddAssign
     + Sub<Output = Self>
@@ -66,38 +90,72 @@ pub trait NumberInstance:
     /// Get an impl of [`NumberClass`] describing this number.
     fn class(&self) -> Self::Class;
 
-    /// Cast this number into the specified [`NumberClass`].
+    /// Convert lossily into the specified [`NumberClass`]; use `try_into_type` to check loss.
     fn into_type(
         self,
         dtype: <Self as NumberInstance>::Class,
     ) -> <<Self as NumberInstance>::Class as NumberClass>::Instance;
 
-    /// Divide without panicking on an integer or Boolean zero divisor.
-    /// Floating and complex division retain their IEEE behavior.
+    /// Checked addition at the selected result type.
+    fn try_add(self, other: Self) -> Result<Self, Error>;
+
+    /// Checked subtraction at the selected result type.
+    fn try_sub(self, other: Self) -> Result<Self, Error>;
+
+    /// Checked multiplication at the selected result type.
+    fn try_mul(self, other: Self) -> Result<Self, Error>;
+
+    /// Checked division; integer quotients still truncate toward zero.
     fn try_div(self, other: Self) -> Result<Self, Error>;
 
-    /// Compute the remainder without panicking on an integer zero divisor.
-    /// Boolean remainder retains its logical XOR behavior.
+    /// Checked remainder; Boolean remainder remains XOR.
     fn try_rem(self, other: Self) -> Result<Self, Error>;
+
+    /// Checked conversion retaining existing wildcard target selection.
+    fn try_into_type(self, dtype: Self::Class) -> Result<Self, Error>;
+
+    /// Sum left-to-right, stopping at the first checked failure.
+    fn try_sum<I: Iterator<Item = Self>>(mut iter: I) -> Result<Self, Error> {
+        let Some(first) = iter.next() else {
+            return Ok(Self::default().class().zero());
+        };
+        iter.try_fold(first, Self::try_add)
+    }
+
+    /// Multiply left-to-right without skipping later promotion or failures.
+    fn try_product<I: Iterator<Item = Self>>(mut iter: I) -> Result<Self, Error> {
+        let Some(first) = iter.next() else {
+            return Ok(Self::default().class().one());
+        };
+        iter.try_fold(first, Self::try_mul)
+    }
 
     /// Calculate the absolute value of this number.
     fn abs(self) -> Self::Abs;
 
+    /// Checked `abs`, rejecting unrepresentable results.
+    fn try_abs(self) -> Result<Self::Abs, Error>;
+
     /// Raise `e` to the power of this number.
     fn exp(self) -> Self::Exp;
+
+    /// Checked `exp`, rejecting unrepresentable results.
+    fn try_exp(self) -> Result<Self::Exp, Error>;
 
     /// Compute the natural logarithm of this number.
     fn ln(self) -> Self::Log;
 
-    /// Compute the logarithm of this number with respect to the given `base`.
-    fn log<N: NumberInstance>(self, base: N) -> Self::Log
-    where
-        Float: From<N>;
+    /// Checked `ln`, rejecting unrepresentable results.
+    fn try_ln(self) -> Result<Self::Log, Error>;
 
-    /// Raise this number to the given exponent.
-    ///
-    /// Panics: if the given exponent is a complex number.
-    fn pow(self, exp: Number) -> Self;
+    /// Compute the logarithm of this number with respect to the given `base`.
+    fn log<N: NumberInstance>(self, base: N) -> Self::Log;
+
+    /// Checked logarithm with the same result type as `log`.
+    fn try_log<N: NumberInstance>(self, base: N) -> Result<Self::Log, Error>;
+
+    /// Checked `pow`, rejecting unrepresentable results.
+    fn try_pow(self, exp: Number) -> Result<Self, Error>;
 
     /// Return `true` if `self` and `other` are nonzero.
     fn and(self, other: Self) -> Self
@@ -130,6 +188,9 @@ pub trait NumberInstance:
     /// Return this number rounded to the nearest integer.
     fn round(self) -> Self::Round;
 
+    /// Checked `round`, rejecting unrepresentable results.
+    fn try_round(self) -> Result<Self::Round, Error>;
+
     /// Return `true` if exactly one of `self` and `other` is zero.
     fn xor(self, other: Self) -> Self
     where
@@ -142,65 +203,80 @@ pub trait NumberInstance:
 }
 
 /// Trigonometric functions.
-pub trait Trigonometry {
+pub trait Trigonometry: Sized {
     type Out: NumberInstance;
 
     /// Arcsine
     fn asin(self) -> Self::Out;
 
+    /// Checked `asin` with domain and representability validation.
+    fn try_asin(self) -> Result<Self::Out, Error>;
+
     /// Sine
     fn sin(self) -> Self::Out;
 
-    /// Hyperbolic arcsine
+    /// Checked `sin` with domain and representability validation.
+    fn try_sin(self) -> Result<Self::Out, Error>;
+
+    /// Inverse hyperbolic sine
     fn asinh(self) -> Self::Out;
+
+    /// Checked `asinh` with domain and representability validation.
+    fn try_asinh(self) -> Result<Self::Out, Error>;
 
     /// Hyperbolic sine
     fn sinh(self) -> Self::Out;
 
-    /// Hyperbolic arccosine
+    /// Checked `sinh` with domain and representability validation.
+    fn try_sinh(self) -> Result<Self::Out, Error>;
+
+    /// Arccosine
     fn acos(self) -> Self::Out;
+
+    /// Checked `acos` with domain and representability validation.
+    fn try_acos(self) -> Result<Self::Out, Error>;
 
     /// Cosine
     fn cos(self) -> Self::Out;
 
-    /// Hyperbolic arccosine
+    /// Checked `cos` with domain and representability validation.
+    fn try_cos(self) -> Result<Self::Out, Error>;
+
+    /// Inverse hyperbolic cosine
     fn acosh(self) -> Self::Out;
+
+    /// Checked `acosh` with domain and representability validation.
+    fn try_acosh(self) -> Result<Self::Out, Error>;
 
     /// Hyperbolic cosine
     fn cosh(self) -> Self::Out;
 
+    /// Checked `cosh` with domain and representability validation.
+    fn try_cosh(self) -> Result<Self::Out, Error>;
+
     /// Arctangent
     fn atan(self) -> Self::Out;
+
+    /// Checked `atan` with domain and representability validation.
+    fn try_atan(self) -> Result<Self::Out, Error>;
 
     /// Tangent
     fn tan(self) -> Self::Out;
 
+    /// Checked `tan` with domain and representability validation.
+    fn try_tan(self) -> Result<Self::Out, Error>;
+
     /// Hyperbolic arctangent
     fn atanh(self) -> Self::Out;
 
+    /// Checked `atanh` with domain and representability validation.
+    fn try_atanh(self) -> Result<Self::Out, Error>;
+
     /// Hyperbolic tangent
     fn tanh(self) -> Self::Out;
-}
 
-/// Defines common operations on real (i.e. not `Complex`) numbers.
-pub trait RealInstance: PartialEq + PartialOrd + Sized {
-    const ONE: Self;
-    const ZERO: Self;
-
-    /// Return `true` if this is zero or a positive number.
-    fn is_positive(&self) -> bool {
-        self >= &Self::ZERO
-    }
-
-    /// Return `true` if this is a negative number.
-    fn is_negative(&self) -> bool {
-        self < &Self::ZERO
-    }
-
-    /// Return `true` if this is zero.
-    fn is_zero(&self) -> bool {
-        self == &Self::ZERO
-    }
+    /// Checked `tanh` with domain and representability validation.
+    fn try_tanh(self) -> Result<Self::Out, Error>;
 }
 
 /// Defines common operations on floating-point numeric types.
@@ -226,9 +302,13 @@ impl NumberClass for ComplexType {
     type Instance = Complex;
 
     fn cast(&self, n: Number) -> Complex {
-        match self {
-            Self::C64 => Complex::C64(n.cast_into()),
-            _ => Complex::C32(n.cast_into()),
+        let NumberType::Complex(dtype) = checked::target(n, (*self).into()) else {
+            unreachable!("numeric family")
+        };
+        match dtype {
+            ComplexType::C32 => Complex::C32(n.cast_into()),
+            ComplexType::C64 => Complex::C64(n.cast_into()),
+            ComplexType::Complex => unreachable!("resolved width"),
         }
     }
 
@@ -258,6 +338,17 @@ impl NumberClass for ComplexType {
             Self::C64 => _Complex::<f64>::new(0f64, 0f64).into(),
             Self::Complex => _Complex::<f32>::new(0f32, 0f32).into(),
         }
+    }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        let value = crate::checked::cast(
+            value,
+            crate::checked::target(value, NumberType::Complex(*self)),
+        )?;
+        let Number::Complex(value) = value else {
+            unreachable!("resolved cast family")
+        };
+        Ok(value)
     }
 }
 
@@ -328,6 +419,14 @@ impl NumberClass for BooleanType {
     fn zero(&self) -> Boolean {
         false.into()
     }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        let value = crate::checked::cast(value, crate::checked::target(value, NumberType::Bool))?;
+        let Number::Bool(value) = value else {
+            unreachable!("resolved cast family")
+        };
+        Ok(value)
+    }
 }
 
 impl Ord for BooleanType {
@@ -374,9 +473,13 @@ impl NumberClass for FloatType {
     type Instance = Float;
 
     fn cast(&self, n: Number) -> Float {
-        match self {
-            Self::F64 => Float::F64(n.cast_into()),
-            _ => Float::F32(n.cast_into()),
+        let NumberType::Float(dtype) = checked::target(n, (*self).into()) else {
+            unreachable!("numeric family")
+        };
+        match dtype {
+            FloatType::F32 => Float::F32(n.cast_into()),
+            FloatType::F64 => Float::F64(n.cast_into()),
+            FloatType::Float => unreachable!("resolved width"),
         }
     }
 
@@ -402,6 +505,17 @@ impl NumberClass for FloatType {
             Self::F64 => 0f64.into(),
             Self::Float => 0f32.into(),
         }
+    }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        let value = crate::checked::cast(
+            value,
+            crate::checked::target(value, NumberType::Float(*self)),
+        )?;
+        let Number::Float(value) = value else {
+            unreachable!("resolved cast family")
+        };
+        Ok(value)
     }
 }
 
@@ -466,11 +580,15 @@ impl NumberClass for IntType {
     type Instance = Int;
 
     fn cast(&self, n: Number) -> Int {
-        match self {
-            Self::I8 => Int::I8(n.cast_into()),
-            Self::I16 => Int::I16(n.cast_into()),
-            Self::Int | Self::I32 => Int::I32(n.cast_into()),
-            Self::I64 => Int::I64(n.cast_into()),
+        let NumberType::Int(dtype) = checked::target(n, (*self).into()) else {
+            unreachable!("numeric family")
+        };
+        match dtype {
+            IntType::I8 => Int::I8(n.cast_into()),
+            IntType::I16 => Int::I16(n.cast_into()),
+            IntType::I32 => Int::I32(n.cast_into()),
+            IntType::I64 => Int::I64(n.cast_into()),
+            IntType::Int => unreachable!("resolved width"),
         }
     }
 
@@ -502,6 +620,15 @@ impl NumberClass for IntType {
             Self::I64 => 0i64.into(),
             Self::Int => 0i16.into(),
         }
+    }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        let value =
+            crate::checked::cast(value, crate::checked::target(value, NumberType::Int(*self)))?;
+        let Number::Int(value) = value else {
+            unreachable!("resolved cast family")
+        };
+        Ok(value)
     }
 }
 
@@ -573,11 +700,15 @@ impl NumberClass for UIntType {
     type Instance = UInt;
 
     fn cast(&self, n: Number) -> UInt {
-        match self {
-            Self::U8 => UInt::U8(n.cast_into()),
-            Self::U16 => UInt::U16(n.cast_into()),
-            Self::UInt | Self::U32 => UInt::U32(n.cast_into()),
-            Self::U64 => UInt::U64(n.cast_into()),
+        let NumberType::UInt(dtype) = checked::target(n, (*self).into()) else {
+            unreachable!("numeric family")
+        };
+        match dtype {
+            UIntType::U8 => UInt::U8(n.cast_into()),
+            UIntType::U16 => UInt::U16(n.cast_into()),
+            UIntType::U32 => UInt::U32(n.cast_into()),
+            UIntType::U64 => UInt::U64(n.cast_into()),
+            UIntType::UInt => unreachable!("resolved width"),
         }
     }
 
@@ -609,6 +740,17 @@ impl NumberClass for UIntType {
             Self::U64 => 0u64.into(),
             Self::UInt => 0u8.into(),
         }
+    }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        let value = crate::checked::cast(
+            value,
+            crate::checked::target(value, NumberType::UInt(*self)),
+        )?;
+        let Number::UInt(value) = value else {
+            unreachable!("resolved cast family")
+        };
+        Ok(value)
     }
 }
 
@@ -745,6 +887,10 @@ impl NumberClass for NumberType {
             Int(it) => it.zero().into(),
             UInt(ut) => ut.zero().into(),
         }
+    }
+
+    fn try_cast(&self, value: Number) -> Result<Self::Instance, Error> {
+        crate::checked::cast(value, crate::checked::target(value, *self))
     }
 }
 
