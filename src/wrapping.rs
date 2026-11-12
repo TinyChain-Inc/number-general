@@ -1,5 +1,7 @@
 //! Explicit integer wrapping with the ordinary scalar promotion rules.
 
+use num::traits::Pow;
+
 use crate::{
     checked, native, Int, IntType, Number, NumberClass, NumberInstance, NumberType, UInt, UIntType,
 };
@@ -47,7 +49,7 @@ macro_rules! integer_methods {
 integer_methods!(Int; I8, I16, I32, I64);
 integer_methods!(UInt; U8, U16, U32, U64);
 
-fn signed(value: i128, dtype: IntType) -> Int {
+pub(super) fn signed(value: i128, dtype: IntType) -> Int {
     match dtype {
         IntType::I8 => Int::I8(value as i8),
         IntType::I16 => Int::I16(value as i16),

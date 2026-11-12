@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use collate::Collate;
+use num::traits::Pow;
 use safecast::CastFrom;
 
 use super::{

@@ -3,6 +3,7 @@ use std::fmt;
 use std::iter::{Product, Sum};
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
+use num::traits::Pow;
 use safecast::{CastFrom, CastInto};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -46,12 +47,27 @@ pub trait NumberClass: Default + Into<NumberType> + Ord + Send + fmt::Display {
 /// Implementations supply both ordinary and checked numerical methods, including
 /// trigonometry through [`Trigonometry`]. Ordinary operations follow their native
 /// numerical contract; checked methods return structured errors. `into_type` is lossy.
+/// Ordinary power is supplied by the [`Pow<Number>`] supertrait; custom
+/// implementations provide that trait separately, while retaining `try_pow` here.
+///
+/// The removed power method is not an alternate entry point:
+/// ```compile_fail
+/// use number_general::{Int, Number, NumberInstance};
+/// let _ = <Int as NumberInstance>::pow(Int::from(2i8), Number::from(3u8));
+/// ```
+///
+/// Identity constants and predicates come from `num::traits` instead of the
+/// removed real-number trait:
+/// ```compile_fail
+/// use number_general::RealInstance;
+/// ```
 pub trait NumberInstance:
     Copy
     + Default
     + Sized
     + From<Boolean>
     + Into<Number>
+    + Pow<Number, Output = Self>
     + Add<Output = Self>
     + AddAssign
     + Sub<Output = Self>
@@ -137,12 +153,6 @@ pub trait NumberInstance:
 
     /// Checked logarithm with the same result type as `log`.
     fn try_log<N: NumberInstance>(self, base: N) -> Result<Self::Log, Error>;
-
-    /// Raise this number to the given exponent.
-    ///
-    /// Integer results require an integral, representable exponent. Floating and
-    /// complex results follow their native numerical backend.
-    fn pow(self, exp: Number) -> Self;
 
     /// Checked `pow`, rejecting unrepresentable results.
     fn try_pow(self, exp: Number) -> Result<Self, Error>;
@@ -267,27 +277,6 @@ pub trait Trigonometry: Sized {
 
     /// Checked `tanh` with domain and representability validation.
     fn try_tanh(self) -> Result<Self::Out, Error>;
-}
-
-/// Defines common operations on real (i.e. not `Complex`) numbers.
-pub trait RealInstance: PartialEq + PartialOrd + Sized {
-    const ONE: Self;
-    const ZERO: Self;
-
-    /// Return `true` if this is zero or a positive number.
-    fn is_positive(&self) -> bool {
-        self >= &Self::ZERO
-    }
-
-    /// Return `true` if this is a negative number.
-    fn is_negative(&self) -> bool {
-        self < &Self::ZERO
-    }
-
-    /// Return `true` if this is zero.
-    fn is_zero(&self) -> bool {
-        self == &Self::ZERO
-    }
 }
 
 /// Defines common operations on floating-point numeric types.

@@ -16,6 +16,57 @@
 //! IEEE environment. NaN payloads are unspecified; pointer-sized conversions
 //! remain target-sized.
 //!
+//! Interoperability with `num::traits` delegates to these same contracts.
+//! `CheckedAdd`, `CheckedSub`, `CheckedMul`, and `CheckedDiv` return `Option`,
+//! discarding the error details retained by `try_*`. `Pow<Number>` uses ordinary
+//! powers; wrapping traits use the existing wrapping methods.
+//!
+//! `ConstZero` and `ConstOne` define canonical identities; `Zero` and `One`
+//! constructors return those constants. They use each enum's default dtype; setters
+//! preserve the receiver's dtype. Canonical identities can promote narrower
+//! operands under the usual rules. Qualify overlapping trait methods explicitly:
+//! ```
+//! use num::traits::{CheckedAdd, One, Pow};
+//! use number_general::Int;
+//!
+//! assert_eq!(CheckedAdd::checked_add(&Int::from(2i8), &Int::from(3i8)), Some(Int::from(5i8)));
+//! assert_eq!(Pow::pow(Int::from(2i8), 3u8.into()), Int::from(8i8));
+//! let mut value = Int::from(7i8);
+//! One::set_one(&mut value);
+//! assert_eq!(value, Int::from(1i8));
+//! ```
+//!
+//! Primitive adapters permit native truncation/rounding; strict casts remain separate:
+//! ```
+//! use num::traits::{FromPrimitive, ToPrimitive};
+//! use number_general::{ErrorKind, Float, Int, IntType, Number, NumberClass};
+//!
+//! assert_eq!(Float::from(1.5f64).to_i64(), Some(1));
+//! assert_eq!(Int::from_u8(7), Some(Int::I64(7)));
+//! assert_eq!(IntType::I64.try_cast(Number::from(1.5f64)).unwrap_err().kind(), ErrorKind::Unrepresentable);
+//! ```
+//!
+//! Unary operations have ordinary, checked and explicit wrapping contracts:
+//! ```
+//! use number_general::{ErrorKind, Number};
+//!
+//! let input = Number::from(u64::MAX);
+//! assert_eq!(input.try_neg().unwrap_err().kind(), ErrorKind::Underflow);
+//! assert_eq!(input.wrapping_neg(), Number::from(1i64));
+//! assert_eq!(Number::from(2i8).try_recip().unwrap(), Number::from(0.5f32));
+//! ```
+//!
+//! Unsigned ordinary negation and integer reciprocal are intentionally absent:
+//! ```compile_fail
+//! use number_general::UInt;
+//! let _ = -UInt::from(1u8);
+//! ```
+//!
+//! ```compile_fail
+//! use number_general::Int;
+//! let _ = Int::from(2i8).recip();
+//! ```
+//!
 //! For (de)serialization with `serde`, enable the `"serde"` feature.
 //!
 //! For (de)coding with `destream`, enable the `"stream"` feature.
@@ -52,6 +103,7 @@ use std::str::FromStr;
 
 use collate::Collate;
 use get_size::GetSize;
+use num::traits::Pow;
 use safecast::{CastFrom, CastInto};
 
 mod checked;
@@ -64,6 +116,8 @@ mod instance;
 mod native;
 #[cfg(feature = "serde")]
 mod serde;
+mod trait_impls;
+mod unary;
 mod wrapping;
 
 pub use class::*;
@@ -294,23 +348,8 @@ macro_rules! checked_number_methods {
     )*};
 }
 
-impl NumberInstance for Number {
-    checked_number_methods!(try_abs => Abs, try_exp => Exp, try_ln => Log, try_round => Round);
-
-    number_methods!(abs => Abs, exp => Exp, ln => Log, round => Round);
-    fn log<N: NumberInstance>(self, base: N) -> Self::Log {
-        let base = base.into();
-        if matches!(self, Self::Complex(_)) || matches!(base, Self::Complex(_)) {
-            let dtype = checked::promote(self, base);
-            let Self::Complex(value) = checked::cast(self, dtype).expect("complex promotion")
-            else {
-                unreachable!("complex")
-            };
-            value.log(base).into()
-        } else {
-            crate::native::float::log(self, base).into()
-        }
-    }
+impl Pow<Number> for Number {
+    type Output = Self;
 
     fn pow(self, exponent: Number) -> Self {
         if matches!(self, Self::Complex(_)) || matches!(exponent, Self::Complex(_)) {
@@ -340,6 +379,26 @@ impl NumberInstance for Number {
             Self::UInt(v) => v.pow(exponent).into(),
             Self::Float(v) => v.pow(exponent).into(),
             Self::Complex(_) => unreachable!("complex branch"),
+        }
+    }
+}
+
+impl NumberInstance for Number {
+    checked_number_methods!(try_abs => Abs, try_exp => Exp, try_ln => Log, try_round => Round);
+
+    number_methods!(abs => Abs, exp => Exp, ln => Log, round => Round);
+
+    fn log<N: NumberInstance>(self, base: N) -> Self::Log {
+        let base = base.into();
+        if matches!(self, Self::Complex(_)) || matches!(base, Self::Complex(_)) {
+            let dtype = checked::promote(self, base);
+            let Self::Complex(value) = checked::cast(self, dtype).expect("complex promotion")
+            else {
+                unreachable!("complex")
+            };
+            value.log(base).into()
+        } else {
+            crate::native::float::log(self, base).into()
         }
     }
 
@@ -751,12 +810,24 @@ impl FromStr for Number {
                 "cannot parse a Number from an empty string".to_string(),
             ))
         } else {
-            Int::from_str(s)
-                .map(Self::from)
-                .or_else(|_| UInt::from_str(s).map(Self::from))
-                .or_else(|_| Float::from_str(s).map(Self::from))
-                .or_else(|_| Complex::from_str(s).map(Self::from))
-                .or_else(|_| Boolean::from_str(s).map(Self::from))
+            Int::from_str(s).map(Self::from).or_else(|signed_error| {
+                UInt::from_str(s).map(Self::from).or_else(|unsigned_error| {
+                    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+                    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                        let (kind, cause) = if s.starts_with('-') {
+                            (ErrorKind::Underflow, signed_error)
+                        } else {
+                            (ErrorKind::Overflow, unsigned_error)
+                        };
+                        return Err(Error::with_kind(kind, cause));
+                    }
+
+                    Float::from_str(s)
+                        .map(Self::from)
+                        .or_else(|_| Complex::from_str(s).map(Self::from))
+                        .or_else(|_| Boolean::from_str(s).map(Self::from))
+                })
+            })
         }
     }
 }
@@ -1080,13 +1151,85 @@ mod tests {
     #[test]
     #[allow(clippy::approx_constant)] // tests use explicit literals to validate parsing
     fn test_parse() {
-        for value in [
-            Number::from(u64::MAX),
-            Number::from(i64::MIN),
-            Number::from(true),
-            Number::from(false),
+        // Text preserves numerical values for these forms, but does not encode dtype.
+        for (value, expected_type) in [
+            (Number::from(u64::MAX), NumberType::UInt(UIntType::U64)),
+            (Number::from(i64::MIN), NumberType::Int(IntType::I64)),
+            (Number::from(i64::MAX), NumberType::Int(IntType::I64)),
+            (Number::from(i8::MIN), NumberType::Int(IntType::I64)),
+            (Number::from(u16::MAX), NumberType::Int(IntType::I64)),
+            (Number::from(1u8), NumberType::Int(IntType::I64)),
+            (Number::from(1f32), NumberType::Int(IntType::I64)),
+            (Number::from(-0f32), NumberType::Int(IntType::I64)),
+            (Number::from(0.5f32), NumberType::Float(FloatType::F64)),
+            (Number::from(0.1f64), NumberType::Float(FloatType::F64)),
+            (
+                Number::from([1.25f32, -0.5]),
+                NumberType::Complex(ComplexType::C64),
+            ),
+            (
+                Number::from([1.25f64, -0.5]),
+                NumberType::Complex(ComplexType::C64),
+            ),
+            (Number::from(true), NumberType::Bool),
+            (Number::from(false), NumberType::Bool),
         ] {
-            assert_eq!(Number::from_str(&value.to_string()).unwrap(), value);
+            let parsed = Number::from_str(&value.to_string()).unwrap();
+            assert_eq!(parsed, value);
+            assert_eq!(parsed.class(), expected_type);
+        }
+        for overflow in [
+            (u64::MAX as u128 + 1).to_string(),
+            (u64::MAX as u128 + 2).to_string(),
+            format!("+{}", u64::MAX as u128 + 1),
+            format!("000{}", u64::MAX as u128 + 1),
+        ] {
+            assert_eq!(
+                Number::from_str(&overflow).unwrap_err().kind(),
+                ErrorKind::Overflow
+            );
+        }
+        for underflow in [
+            (i64::MIN as i128 - 1).to_string(),
+            (i128::MIN).to_string(),
+            format!("-000{}", i64::MAX as u128 + 2),
+        ] {
+            assert_eq!(
+                Number::from_str(&underflow).unwrap_err().kind(),
+                ErrorKind::Underflow
+            );
+        }
+        assert_eq!(
+            Number::from_str(&format!("+000{}", u64::MAX)).unwrap(),
+            Number::from(u64::MAX)
+        );
+        assert_eq!(
+            Number::from_str(&format!("-000{}", i64::MIN.unsigned_abs())).unwrap(),
+            Number::from(i64::MIN)
+        );
+        for suffix in [".0", "e-2", "e+2"] {
+            let text = format!("{}{suffix}", u64::MAX as u128 + 2);
+            let parsed = Number::from_str(&text).unwrap();
+            assert_eq!(parsed, Number::from(f64::from_str(&text).unwrap()));
+            assert!(matches!(parsed, Number::Float(_)));
+        }
+        let complex_text = format!("{}+2i", u64::MAX as u128 + 2);
+        assert_eq!(
+            Number::from_str(&complex_text).unwrap(),
+            Number::from(num::Complex::<f64>::from_str(&complex_text).unwrap())
+        );
+        for malformed in [
+            "184467440737095516160000000000x",
+            "+",
+            "-",
+            "+-1",
+            "--1",
+            "١٢",
+        ] {
+            assert_eq!(
+                Number::from_str(malformed).unwrap_err().kind(),
+                ErrorKind::InvalidInput
+            );
         }
         assert!(matches!(Number::from_str("12").unwrap(), Number::Int(_)));
         assert!(matches!(
@@ -1145,3 +1288,7 @@ mod checked_contract;
 #[cfg(test)]
 #[path = "../tests/unit/contracts.rs"]
 mod numerical_contracts;
+
+#[cfg(test)]
+#[path = "../tests/unit/num_traits.rs"]
+mod num_traits_contract;

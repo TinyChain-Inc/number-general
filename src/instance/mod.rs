@@ -7,11 +7,12 @@ use std::str::FromStr;
 
 use collate::Collate;
 use get_size::GetSize;
+use num::traits::{ConstOne, ConstZero, Pow};
 use safecast::{CastFrom, CastInto};
 
 use super::class::{
     BooleanType, ComplexType, FloatInstance, FloatType, IntType, NumberClass, NumberInstance,
-    NumberType, RealInstance, Trigonometry, UIntType,
+    NumberType, Trigonometry, UIntType,
 };
 use super::{_Complex, Error, ErrorKind, Number};
 use crate::checked;
@@ -139,6 +140,14 @@ impl GetSize for Boolean {
     }
 }
 
+impl Pow<Number> for Boolean {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        self.try_pow(exponent).expect("Boolean power")
+    }
+}
+
 impl NumberInstance for Boolean {
     fn abs(self) -> Self::Abs {
         self
@@ -158,10 +167,6 @@ impl NumberInstance for Boolean {
 
     fn log<N: NumberInstance>(self, base: N) -> Self::Log {
         crate::native::float::log(self.into(), base.into())
-    }
-
-    fn pow(self, exponent: Number) -> Self {
-        self.try_pow(exponent).expect("Boolean power")
     }
 
     type Abs = Self;
@@ -263,9 +268,12 @@ impl NumberInstance for Boolean {
     }
 }
 
-impl RealInstance for Boolean {
-    const ONE: Self = Boolean(true);
-    const ZERO: Self = Boolean(false);
+impl ConstZero for Boolean {
+    const ZERO: Self = Self(false);
+}
+
+impl ConstOne for Boolean {
+    const ONE: Self = Self(true);
 }
 
 impl From<bool> for Boolean {
@@ -356,15 +364,19 @@ impl Complex {
     }
 }
 
+impl Pow<Number> for Complex {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        crate::native::complex::pow(self, exponent)
+    }
+}
+
 impl NumberInstance for Complex {
     ordinary_methods!(complex; abs => Abs, exp => Exp, ln => Log, round => Round);
 
     fn log<N: NumberInstance>(self, base: N) -> Self::Log {
         crate::native::complex::log(self, base.into())
-    }
-
-    fn pow(self, exponent: Number) -> Self {
-        crate::native::complex::pow(self, exponent)
     }
 
     type Abs = Float;
@@ -891,15 +903,19 @@ pub enum Float {
     F64(f64),
 }
 
+impl Pow<Number> for Float {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        crate::native::float::pow(self, exponent)
+    }
+}
+
 impl NumberInstance for Float {
     ordinary_methods!(float; abs => Abs, exp => Exp, ln => Log, round => Round);
 
     fn log<N: NumberInstance>(self, base: N) -> Self::Log {
         crate::native::float::log(self.into(), base.into())
-    }
-
-    fn pow(self, exponent: Number) -> Self {
-        crate::native::float::pow(self, exponent)
     }
 
     type Abs = Float;
@@ -1108,11 +1124,6 @@ impl NumberInstance for Float {
     }
 }
 
-impl RealInstance for Float {
-    const ONE: Self = Float::F32(1.);
-    const ZERO: Self = Float::F32(0.);
-}
-
 impl FloatInstance for Float {
     fn is_infinite(&self) -> bool {
         match self {
@@ -1289,6 +1300,14 @@ pub enum Int {
     I64(i64),
 }
 
+impl Pow<Number> for Int {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        crate::native::int_pow(self, exponent)
+    }
+}
+
 impl NumberInstance for Int {
     fn abs(self) -> Self::Abs {
         match self {
@@ -1313,10 +1332,6 @@ impl NumberInstance for Int {
 
     fn log<N: NumberInstance>(self, base: N) -> Self::Log {
         crate::native::float::log(self.into(), base.into())
-    }
-
-    fn pow(self, exponent: Number) -> Self {
-        crate::native::int_pow(self, exponent)
     }
 
     type Abs = Self;
@@ -1436,11 +1451,6 @@ impl NumberInstance for Int {
     fn try_pow(self, exponent: Number) -> Result<Self, Error> {
         checked::pow_signed(self, exponent)
     }
-}
-
-impl RealInstance for Int {
-    const ONE: Self = Int::I8(1);
-    const ZERO: Self = Int::I8(0);
 }
 
 impl CastFrom<Complex> for Int {
@@ -1632,6 +1642,14 @@ pub enum UInt {
     U64(u64),
 }
 
+impl Pow<Number> for UInt {
+    type Output = Self;
+
+    fn pow(self, exponent: Number) -> Self {
+        crate::native::uint_pow(self, exponent)
+    }
+}
+
 impl NumberInstance for UInt {
     fn abs(self) -> Self::Abs {
         self
@@ -1651,10 +1669,6 @@ impl NumberInstance for UInt {
 
     fn log<N: NumberInstance>(self, base: N) -> Self::Log {
         crate::native::float::log(self.into(), base.into())
-    }
-
-    fn pow(self, exponent: Number) -> Self {
-        crate::native::uint_pow(self, exponent)
     }
 
     type Abs = Self;
@@ -1774,11 +1788,6 @@ impl NumberInstance for UInt {
     fn try_pow(self, exponent: Number) -> Result<Self, Error> {
         checked::pow_unsigned(self, exponent)
     }
-}
-
-impl RealInstance for UInt {
-    const ONE: Self = UInt::U8(1);
-    const ZERO: Self = UInt::U8(0);
 }
 
 impl CastFrom<Complex> for UInt {
@@ -2223,7 +2232,7 @@ impl Trigonometry for Complex {
 impl TryFrom<UInt> for Int {
     type Error = Error;
     fn try_from(value: UInt) -> Result<Self, Error> {
-        IntType::Int.try_cast(value.into())
+        IntType::I64.try_cast(value.into())
     }
 }
 

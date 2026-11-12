@@ -226,3 +226,154 @@ vectors and overflow classification through the wasm-bindgen test runner in Node
 The existing native portability test uses the same assertions. This verifies the
 selected vectors rather than every operation on every WASM host. No production
 JavaScript dependency or numerical policy is introduced by the tests.
+
+## Generic numerical traits
+
+The built-in enums implement these `num_traits` contracts, available through the
+existing `num::traits` re-export:
+
+- `ConstZero`, `ConstOne`, `Zero`, `One`, `CheckedAdd`, `CheckedSub`, `CheckedMul`, `CheckedDiv`, and
+  `Pow<Number>` for `Boolean`, `Int`, `UInt`, `Float`, `Complex`, and `Number`.
+- `WrappingAdd`, `WrappingSub`, `WrappingMul`, and `WrappingNeg` for `Int`, `UInt`, and `Number`.
+- `ToPrimitive`, `FromPrimitive`, and `Num` for all six enums.
+- `Neg` for `Int`, `Float`, `Complex`, and `Number`; `CheckedNeg` also for `UInt`.
+- `Inv` for `Float`, `Complex`, and `Number`.
+- `Signed` for `Float`, `Unsigned` for `UInt`, and `Bounded` for `Boolean`, `Int`, `UInt`, and `Float`.
+
+Identities have one constant definition per enum; the function constructors return
+those constants. Arithmetic adapters delegate to their owning methods. Checked adapters return
+`None` for every error; use `try_*` when the error kind or diagnostic matters.
+Power uses ordinary numerical behavior, including its existing panic conditions.
+Wrapping retains promotion and does not require matching operand dtypes.
+
+Parameterless identities use Bool for `Boolean` and `Number`, I16 for `Int`, U8
+for `UInt`, F32 for `Float`, and C32 for `Complex`. Their predicates recognize
+zero and one across widths, including signed zeros. `set_zero` and `set_one`
+preserve the receiver's dtype; combining a constructed identity with another
+value can promote that value under the ordinary rules. Importing overlapping
+traits can make method syntax ambiguous; use fully qualified calls such as
+`num::traits::Pow::pow(value, exponent)`. Ordinary power is owned by that trait;
+`NumberInstance` inherits `Pow<Number, Output = Self>` and retains `try_pow`.
+
+### Trait migration
+
+`RealInstance` has been removed, including its unused sign helpers. Use
+`ConstZero::ZERO`, `ConstOne::ONE`, and `Zero::is_zero` for identities. The former
+`RealInstance` integer constants used I8; the canonical `Int` identities now use
+I16, matching the existing default and identity constructors. The removed
+zero-inclusive `is_positive` helper is not replaced with `Signed::is_positive`;
+those contracts differ at zero, including floating signed zeros.
+
+Custom `NumberInstance` implementations must implement
+`num::traits::Pow<Number, Output = Self>` separately. Move the ordinary power
+method body there and replace `<T as NumberInstance>::pow` with
+`<T as num::traits::Pow<Number>>::pow`. Concrete callers import `Pow` to use
+ordinary power method syntax; generic `T: NumberInstance` callers inherit it.
+There is no forwarding alias. Checked powers, wrapping powers, and
+receiver-dependent `NumberClass::zero/one` retain their existing owners.
+`Trigonometry` and `FloatInstance` are also unchanged.
+
+### Primitive conversion and radix contracts
+
+Primitive conversion adapters follow the contained primitive's `num_traits`
+conversion rules, including permitted truncation and floating precision loss.
+All destination methods delegate directly, including 128-bit and pointer-sized
+integers; integer conversion does not pass through a floating intermediate.
+Complex exports require a zero imaginary component (either signed zero is
+accepted); Boolean exports use 0/1. Non-real complex exports return `None`.
+These adapters are not strict checked casts: cloud execution retains `try_cast`
+and its structured diagnostics.
+
+`FromPrimitive` chooses widths as follows:
+
+| Destination | Result selection |
+|---|---|
+| `Boolean` | Accept exactly numeric zero or one, including negative floating zero. |
+| `Int` | Preserve supported signed source widths; other sources use I64. |
+| `UInt` | Preserve supported unsigned source widths; other sources use U64. |
+| `Float` | Preserve f32/f64 sources; other sources use F64. |
+| `Complex` | All primitive sources use C64 with zero imaginary part. |
+| `Number` | Preserve supported primitive families and widths. i128 uses I64, then U64 for larger representable positive values; u128 uses U64. Larger integers return `None`, without a floating fallback. |
+
+Pointer-sized imports use native pointer width. Cross-family range rejection and
+float-to-integer truncation delegate to primitive conversions; no operand is
+prematurely narrowed through another integer width.
+
+Complete decimal integer literals remain integers: values above U64 return
+`Overflow`, and negative values below I64 return `Underflow`. This includes
+optional signs and leading zeros. Explicit decimal points, scientific notation,
+and complex syntax retain their existing floating behavior. Plain `Display`
+text does not encode dtype; use typed serialization when metadata must survive.
+
+`TryFrom<UInt> for Int` uses the destination family's full I64 capacity and returns
+I64 for every successful conversion, matching wide cross-family primitive
+imports. Class-directed checked casts retain their explicit or source-inferred
+widths, and explicit lossy casts retain their existing behavior. This intentionally
+replaces rejection of representable U16/U32 values and changes successful narrow
+conversion result dtypes to I64.
+
+`Num::from_str_radix` uses the existing `FromStr` for radix 10, including its
+whitespace and dynamic type-selection behavior. Other radices 2–36 support
+`Int`, `UInt`, and integer-only `Number` parsing through i64/u64 parsers. Dynamic
+parsing is signed-first and trims its input. Unsupported nondecimal Boolean,
+Float and Complex requests return `Unsupported`. Invalid radices return
+`InvalidInput` before primitive parsing. No prefix autodetection or new floating
+parser is introduced. `NumAssign` follows the upstream blanket implementation.
+
+### Negation and reciprocal
+
+Ordinary unary `-` preserves Int/Float/Complex widths. Signed integer overflow
+follows Rust settings; floating and complex components are negated directly,
+retaining signed zeros and IEEE nonfinite behavior. `try_neg` returns `Overflow`
+for signed minima. Typed unsigned `try_neg` accepts only zero and returns
+`Underflow` otherwise; `UInt` has no ordinary `Neg` implementation.
+`wrapping_neg` retains typed integer widths.
+
+Dynamic `Number` Boolean/unsigned negation uses existing signed-family mappings:
+Boolean, U8 and U16 select I16; U32 selects I32; U64 selects I64. Negation happens
+in widened arithmetic before narrowing, so unsigned values mapping to a signed
+minimum succeed. Larger negative results return `Underflow` from `try_neg`;
+ordinary `-` panics in every profile. Dynamic wrapping negation wraps into the
+selected signed dtype. Thus typed UInt wrapping negation stays unsigned, while
+`Number` wrapping negation may select a signed family. Int variants retain their
+existing ordinary/checked/wrapping overflow contracts.
+
+`recip` and `Inv` delegate to ordinary division by a same-dtype one; `try_recip`
+delegates to checked division. Float/Complex retain their dtype. Dynamic integer
+and Boolean operands first use the existing floating-family mapping: 64-bit
+integers select F64, narrower integers and Booleans select F32. Ordinary zero
+reciprocals follow existing IEEE division; checked reciprocals report the existing
+division, overflow and underflow errors. There is no typed integer reciprocal.
+These checked unary methods are inherent and add no custom `NumberInstance`
+requirements.
+
+### Signs and family-wide bounds
+
+`Signed<Float>` delegates sign classification and signum to the corresponding
+primitive trait, preserving width. Positive/negative floating zeros and NaNs
+follow upstream sign-bit behavior, not the removed zero-inclusive sign helpers.
+Mixed-width `abs_sub` promotes within the floating family before primitive
+execution. `Unsigned` is implemented only for UInt.
+
+`Bounded` describes an entire enum family: Boolean false/true, I64 extrema, U64
+zero/maximum, and finite F64 extrema. It does not report the bounds of an existing
+I8 or F32 value. Lower/upper bounds follow blanket implementations; there are no
+Complex or Number bounds and no per-dtype bounds API.
+
+### Excluded and deferred traits
+
+| Trait family | Status and reason |
+|---|---|
+| `Float`, `FloatCore` | Incompatible with canonical scalar equality: their IEEE contract expects NaN to compare unequal to itself. |
+| `PrimInt` | Incompatible with varying-width integer representations and promotion; it requires fixed-width binary integers. |
+| `CheckedRem` | Incompatible with direct delegation: signed minimum remainder by minus one returns `None` upstream, while `try_rem` returns representable zero. |
+| `NumCast`, `AsPrimitive` | Not implemented. Target dtype inference and unconditional lossy casts remain separate from primitive adapters and explicit checked/lossy class casts. |
+| `Signed<Int>` | Deferred: its documented minimum-absolute-value result differs from the crate's profile-sensitive ordinary `Int::abs`. |
+| Signedness for Boolean, Complex or Number | Not implemented; the supported sign contract is confined to Float and UInt. |
+| `FloatConst`, saturating and bitwise operations | Unsupported pending a consumer and an explicit precision/arithmetic contract. |
+
+`NumOps`, `NumAssignOps`, `NumAssign`, and lower/upper bounds arise from upstream
+blanket implementations where their requirements are satisfied; no manual
+implementations are needed. Deferred capabilities are distinct from genuinely
+incompatible contracts. Floating constants, saturation and bitwise operations do
+not silently inherit another numerical policy.

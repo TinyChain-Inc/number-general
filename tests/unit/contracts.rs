@@ -1,6 +1,7 @@
 use std::hint::black_box;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use num::traits::Pow;
 use safecast::CastFrom;
 
 use super::{
@@ -191,12 +192,35 @@ fn promotion_targets_and_narrowing_are_explicit() {
             assert_eq!(source.into_type(target).class(), a.class());
         }
     }
+    let converted = Int::try_from(UInt::from(u16::MAX)).unwrap();
+    assert_eq!(converted, Int::I64(i64::from(u16::MAX)));
+    assert_eq!(converted.class(), IntType::I64);
     assert_eq!(
-        Int::try_from(UInt::from(u16::MAX)).unwrap_err().kind(),
+        IntType::I16
+            .try_cast(Number::from(u16::MAX))
+            .unwrap_err()
+            .kind(),
         ErrorKind::Overflow
     );
+    assert_eq!(
+        IntType::Int
+            .try_cast(Number::from(u16::MAX))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Overflow
+    );
+    for value in [i64::MAX as u64 + 1, u64::MAX] {
+        assert_eq!(
+            Int::try_from(UInt::from(value)).unwrap_err().kind(),
+            ErrorKind::Overflow
+        );
+    }
+    assert_eq!(
+        Int::try_from(UInt::from(i64::MAX as u64)).unwrap(),
+        Int::I64(i64::MAX)
+    );
     assert_eq!(Int::cast_from(UInt::from(u16::MAX)), Int::from(-1i16));
-    assert_eq!(Int::try_from(UInt::from(1u8)).unwrap(), Int::from(1i16));
+    assert_eq!(Int::try_from(UInt::from(1u8)).unwrap(), Int::from(1i64));
     assert_eq!(usize::try_from(UInt::from(1u8)).unwrap(), 1usize);
     let result = usize::try_from(UInt::from(u64::MAX));
     if usize::BITS < u64::BITS {

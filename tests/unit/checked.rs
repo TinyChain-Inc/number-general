@@ -1,6 +1,8 @@
 use std::cell::Cell;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use num::traits::Pow;
+
 use super::{
     Boolean, Complex, ComplexType, Error, ErrorKind, Float, FloatType, Int, IntType, Number,
     NumberClass, NumberInstance, NumberType, Trigonometry, UInt, UIntType,
