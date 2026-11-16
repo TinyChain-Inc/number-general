@@ -28,8 +28,11 @@ Complex magnitudes retain their component precision and use a stable norm.
 A complex number is false exactly when both components are zero; NaNs are truthy.
 
 Collation orders all real-valued numbers numerically before non-real complex
-numbers. Non-real complex values use a double-precision norm; distinct values may
-collate equally. JSON may spell an f32 with its full exactly represented value.
+numbers. Non-real complex values compare their double-precision norms, then real
+and imaginary components through `FloatCollator` when norms tie. This includes
+exactly equal norms and ties caused by rounding or overflow. Collation equality
+matches native equality across numeric representations, signed zero, and NaNs;
+unequal complex values with equal norms are distinct range values. JSON may spell an f32 with its full exactly represented value.
 These corrections are unreleased ordering changes: recreate development stores
 whose indexes relied on the earlier comparisons rather than reopening them under
 new semantics.

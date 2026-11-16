@@ -19,7 +19,7 @@ fn hash(value: Number) -> u64 {
 
 #[test]
 fn exact_numeric_equality_hashing_and_collation_laws() {
-    let values: [Number; 31] = [
+    let values: Vec<Number> = vec![
         false.into(),
         (-0.0f32).into(),
         0u64.into(),
@@ -51,6 +51,18 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
         f64::MIN.into(),
         i64::MIN.into(),
         (i64::MIN + 1).into(),
+        [3.0f32, 4.0].into(),
+        [3.0f64, 4.0].into(),
+        [4.0f64, 3.0].into(),
+        [0.0f64, 1.0].into(),
+        [-0.0f64, 1.0].into(),
+        [f64::NAN, 1.0].into(),
+        [f64::from_bits(0x7ff0_0000_0000_0001), 1.0].into(),
+        [1.0, f64::NAN].into(),
+        [1.0, f64::INFINITY].into(),
+        [2.0, f64::INFINITY].into(),
+        [f64::MAX, f64::MAX].into(),
+        [f64::MAX, f64::MAX / 2.0].into(),
     ];
     let collator = NumberCollator::default();
     for &left in &values {
@@ -64,6 +76,7 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
                 collator.cmp(&left, &right),
                 collator.cmp(&right, &left).reverse()
             );
+            assert_eq!(collator.cmp(&left, &right).is_eq(), left == right);
             if left == right {
                 assert_eq!(left.partial_cmp(&right), Some(Ordering::Equal));
                 assert_eq!(hash(left), hash(right));
@@ -84,7 +97,7 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
     assert_ne!(Number::from(1.0000000000000002f64), Number::from(1.0f64));
     assert_eq!(
         collator.cmp(&Number::from([1.0, 1.0]), &Number::from([-1.0, 1.0])),
-        Ordering::Equal
+        Ordering::Greater
     );
     assert_ne!(Number::from([1.0, 1.0]), Number::from([-1.0, 1.0]));
 
@@ -122,6 +135,30 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
             );
         }
     }
+}
+
+#[test]
+fn complex_norm_ties_use_float_component_order() {
+    let collator = crate::ComplexCollator::default();
+    for (left, right) in [
+        ([3.0, 4.0], [4.0, 3.0]),
+        ([3.0, -4.0], [3.0, 4.0]),
+        ([1.0, f64::EPSILON / 4.0], [1.0, f64::EPSILON / 2.0]),
+        ([f64::MAX, f64::MAX / 2.0], [f64::MAX, f64::MAX]),
+        ([1.0, f64::INFINITY], [2.0, f64::INFINITY]),
+    ] {
+        assert_eq!(left[0].hypot(left[1]), right[0].hypot(right[1]));
+        let left = Complex::from(left);
+        let right = Complex::from(right);
+        assert_eq!(collator.cmp(&left, &right), Ordering::Less);
+        assert_eq!(collator.cmp(&right, &left), Ordering::Greater);
+    }
+
+    // Norm remains the first comparison, even when component order opposes it.
+    assert_eq!(
+        collator.cmp(&Complex::from([100.0, 1.0]), &Complex::from([1.0, 200.0])),
+        Ordering::Less
+    );
 }
 
 #[test]

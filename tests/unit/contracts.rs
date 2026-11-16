@@ -10,6 +10,94 @@ use super::{
 };
 
 #[test]
+fn native_primitive_adapters_preserve_variants_and_casts() {
+    macro_rules! signed {
+        ($primitive:ty, $variant:ident) => {
+            for value in [<$primitive>::MIN, -1, 0, 1, <$primitive>::MAX] {
+                let wrapped = Int::from(value);
+                assert!(matches!(wrapped, Int::$variant(_)));
+                assert_eq!(i8::cast_from(wrapped), value as i8);
+                assert_eq!(i16::cast_from(wrapped), value as i16);
+                assert_eq!(i32::cast_from(wrapped), value as i32);
+                assert_eq!(i64::from(wrapped), value as i64);
+                assert_eq!(wrapped.to_string(), value.to_string());
+            }
+        };
+    }
+
+    signed!(i8, I8);
+    signed!(i16, I16);
+    signed!(i32, I32);
+    signed!(i64, I64);
+
+    macro_rules! unsigned {
+        ($primitive:ty, $variant:ident) => {
+            for value in [0, 1, <$primitive>::MAX] {
+                let wrapped = UInt::from(value);
+                assert!(matches!(wrapped, UInt::$variant(_)));
+                assert_eq!(u8::cast_from(wrapped), value as u8);
+                assert_eq!(u16::cast_from(wrapped), value as u16);
+                assert_eq!(u32::cast_from(wrapped), value as u32);
+                assert_eq!(u64::from(wrapped), value as u64);
+                assert_eq!(usize::cast_from(wrapped), value as usize);
+                assert_eq!(wrapped.to_string(), value.to_string());
+            }
+        };
+    }
+
+    unsigned!(u8, U8);
+    unsigned!(u16, U16);
+    unsigned!(u32, U32);
+    unsigned!(u64, U64);
+
+    let c32 = num::Complex::new(1.25_f32, -2.5);
+    let c64 = num::Complex::new(1.25_f64, -2.5);
+    assert!(matches!(Complex::from(c32), Complex::C32(value) if value == c32));
+    assert!(matches!(Complex::from(c64), Complex::C64(value) if value == c64));
+}
+
+#[test]
+fn native_float_adapters_preserve_bits_and_width() {
+    for value in [
+        0.0_f32,
+        -0.0,
+        f32::MIN_POSITIVE,
+        f32::MAX,
+        f32::INFINITY,
+        f32::NAN,
+    ] {
+        let wrapped = Float::from(value);
+        assert!(matches!(wrapped, Float::F32(_)));
+        assert_eq!(f32::cast_from(wrapped).to_bits(), value.to_bits());
+        if value.is_nan() {
+            assert!(f64::from(wrapped).is_nan());
+        } else {
+            assert_eq!(f64::from(wrapped).to_bits(), (value as f64).to_bits());
+        }
+        assert_eq!(wrapped.to_string(), value.to_string());
+    }
+
+    for value in [
+        0.0_f64,
+        -0.0,
+        f64::MIN_POSITIVE,
+        f64::MAX,
+        f64::NEG_INFINITY,
+        f64::NAN,
+    ] {
+        let wrapped = Float::from(value);
+        assert!(matches!(wrapped, Float::F64(_)));
+        assert_eq!(f64::from(wrapped).to_bits(), value.to_bits());
+        if value.is_nan() {
+            assert!(f32::cast_from(wrapped).is_nan());
+        } else {
+            assert_eq!(f32::cast_from(wrapped).to_bits(), (value as f32).to_bits());
+        }
+        assert_eq!(wrapped.to_string(), value.to_string());
+    }
+}
+
+#[test]
 fn ordinary_integer_ops_follow_primitive_overflow() {
     macro_rules! dtype {
         ($t:ty) => {{

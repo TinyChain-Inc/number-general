@@ -27,6 +27,45 @@ macro_rules! fmt_debug {
     };
 }
 
+// Preserve the explicit native conversion expressions at each call site.
+macro_rules! primitive_imports {
+    ($family:ident; $($primitive:ty => $variant:ident),+ $(,)?) => {$(
+        impl From<$primitive> for $family {
+            fn from(value: $primitive) -> Self {
+                Self::$variant(value)
+            }
+        }
+    )+};
+}
+
+macro_rules! primitive_exports {
+    ($family:ident; $(
+        $trait:ident::$method:ident -> $primitive:ty, |$input:ident| {
+            $($variant:ident($value:ident) => $output:expr),+ $(,)?
+        };
+    )+) => {$(
+        impl $trait<$family> for $primitive {
+            fn $method($input: $family) -> Self {
+                match $input {
+                    $($family::$variant($value) => $output,)+
+                }
+            }
+        }
+    )+};
+}
+
+macro_rules! fmt_display {
+    ($family:ident; $($variant:ident),+ $(,)?) => {
+        impl fmt::Display for $family {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                match self {
+                    $(Self::$variant(value) => fmt::Display::fmt(value, f),)+
+                }
+            }
+        }
+    };
+}
+
 macro_rules! ordinary_methods {
     ($module:ident; $($name:ident => $out:ident),*) => {$(
         fn $name(self) -> Self::$out {
@@ -826,17 +865,7 @@ impl From<Boolean> for Complex {
     }
 }
 
-impl From<_Complex<f32>> for Complex {
-    fn from(c: _Complex<f32>) -> Self {
-        Self::C32(c)
-    }
-}
-
-impl From<_Complex<f64>> for Complex {
-    fn from(c: _Complex<f64>) -> Self {
-        Self::C64(c)
-    }
-}
+primitive_imports!(Complex; _Complex<f32> => C32, _Complex<f64> => C64);
 
 impl FromStr for Complex {
     type Err = Error;
@@ -877,7 +906,8 @@ impl fmt::Display for Complex {
     }
 }
 
-/// Defines a collation order for [`Complex`].
+/// Orders complex values by norm, then real and imaginary components.
+/// Component comparison reuses [`FloatCollator`] when computed norms tie.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct ComplexCollator {
     float: FloatCollator,
@@ -889,10 +919,13 @@ impl Collate for ComplexCollator {
     fn cmp(&self, left: &Self::Value, right: &Self::Value) -> Ordering {
         let left: _Complex<f64> = (*left).into();
         let right: _Complex<f64> = (*right).into();
-        self.float.cmp(
-            &Float::F64(left.re.hypot(left.im)),
-            &Float::F64(right.re.hypot(right.im)),
-        )
+        self.float
+            .cmp(
+                &Float::F64(left.re.hypot(left.im)),
+                &Float::F64(right.re.hypot(right.im)),
+            )
+            .then_with(|| self.float.cmp(&Float::F64(left.re), &Float::F64(right.re)))
+            .then_with(|| self.float.cmp(&Float::F64(left.im), &Float::F64(right.im)))
     }
 }
 
@@ -1184,17 +1217,7 @@ impl From<Boolean> for Float {
     }
 }
 
-impl From<f32> for Float {
-    fn from(f: f32) -> Self {
-        Self::F32(f)
-    }
-}
-
-impl From<f64> for Float {
-    fn from(f: f64) -> Self {
-        Self::F64(f)
-    }
-}
+primitive_imports!(Float; f32 => F32, f64 => F64);
 
 impl From<Int> for Float {
     fn from(i: Int) -> Self {
@@ -1243,34 +1266,20 @@ impl CastFrom<Float> for Boolean {
     }
 }
 
-impl CastFrom<Float> for f32 {
-    fn cast_from(f: Float) -> f32 {
-        match f {
-            Float::F32(f) => f,
-            Float::F64(f) => f as f32,
-        }
-    }
-}
-
-impl From<Float> for f64 {
-    fn from(f: Float) -> f64 {
-        match f {
-            Float::F32(f) => f as f64,
-            Float::F64(f) => f,
-        }
-    }
+primitive_exports! { Float;
+    CastFrom::cast_from -> f32, |f| {
+        F32(f) => f,
+        F64(f) => f as f32,
+    };
+    From::from -> f64, |f| {
+        F32(f) => f as f64,
+        F64(f) => f,
+    };
 }
 
 fmt_debug!(Float);
 
-impl fmt::Display for Float {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Float::F32(n) => fmt::Display::fmt(n, f),
-            Float::F64(n) => fmt::Display::fmt(n, f),
-        }
-    }
-}
+fmt_display!(Float; F32, F64);
 
 /// Defines a collation order for [`Float`]. NaNs compare equally, after other values.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
@@ -1480,37 +1489,31 @@ impl CastFrom<Int> for Boolean {
     }
 }
 
-impl CastFrom<Int> for i8 {
-    fn cast_from(i: Int) -> i8 {
-        match i {
-            Int::I8(i) => i,
-            Int::I16(i) => i as i8,
-            Int::I32(i) => i as i8,
-            Int::I64(i) => i as i8,
-        }
-    }
-}
-
-impl CastFrom<Int> for i16 {
-    fn cast_from(i: Int) -> i16 {
-        match i {
-            Int::I8(i) => i as i16,
-            Int::I16(i) => i,
-            Int::I32(i) => i as i16,
-            Int::I64(i) => i as i16,
-        }
-    }
-}
-
-impl CastFrom<Int> for i32 {
-    fn cast_from(i: Int) -> i32 {
-        match i {
-            Int::I8(i) => i as i32,
-            Int::I16(i) => i as i32,
-            Int::I32(i) => i,
-            Int::I64(i) => i as i32,
-        }
-    }
+primitive_exports! { Int;
+    CastFrom::cast_from -> i8, |i| {
+        I8(i) => i,
+        I16(i) => i as i8,
+        I32(i) => i as i8,
+        I64(i) => i as i8,
+    };
+    CastFrom::cast_from -> i16, |i| {
+        I8(i) => i as i16,
+        I16(i) => i,
+        I32(i) => i as i16,
+        I64(i) => i as i16,
+    };
+    CastFrom::cast_from -> i32, |i| {
+        I8(i) => i as i32,
+        I16(i) => i as i32,
+        I32(i) => i,
+        I64(i) => i as i32,
+    };
+    From::from -> i64, |i| {
+        I8(i) => i as i64,
+        I16(i) => i as i64,
+        I32(i) => i as i64,
+        I64(i) => i,
+    };
 }
 
 impl Eq for Int {}
@@ -1557,29 +1560,7 @@ impl Default for Int {
     }
 }
 
-impl From<i8> for Int {
-    fn from(i: i8) -> Int {
-        Int::I8(i)
-    }
-}
-
-impl From<i16> for Int {
-    fn from(i: i16) -> Int {
-        Int::I16(i)
-    }
-}
-
-impl From<i32> for Int {
-    fn from(i: i32) -> Int {
-        Int::I32(i)
-    }
-}
-
-impl From<i64> for Int {
-    fn from(i: i64) -> Int {
-        Int::I64(i)
-    }
-}
+primitive_imports!(Int; i8 => I8, i16 => I16, i32 => I32, i64 => I64);
 
 impl CastFrom<UInt> for Int {
     fn cast_from(u: UInt) -> Int {
@@ -1601,17 +1582,6 @@ impl From<Boolean> for Int {
     }
 }
 
-impl From<Int> for i64 {
-    fn from(i: Int) -> i64 {
-        match i {
-            Int::I8(i) => i as i64,
-            Int::I16(i) => i as i64,
-            Int::I32(i) => i as i64,
-            Int::I64(i) => i,
-        }
-    }
-}
-
 impl FromStr for Int {
     type Err = Error;
 
@@ -1622,16 +1592,7 @@ impl FromStr for Int {
 
 fmt_debug!(Int);
 
-impl fmt::Display for Int {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Int::I8(i) => fmt::Display::fmt(i, f),
-            Int::I16(i) => fmt::Display::fmt(i, f),
-            Int::I32(i) => fmt::Display::fmt(i, f),
-            Int::I64(i) => fmt::Display::fmt(i, f),
-        }
-    }
-}
+fmt_display!(Int; I8, I16, I32, I64);
 
 /// An unsigned integer.
 #[derive(Clone, Copy, get_size_derive::GetSize)]
@@ -1829,40 +1790,37 @@ impl CastFrom<UInt> for bool {
     }
 }
 
-impl CastFrom<UInt> for u8 {
-    fn cast_from(u: UInt) -> u8 {
-        use UInt::*;
-        match u {
-            U8(u) => u,
-            U16(u) => u as u8,
-            U32(u) => u as u8,
-            U64(u) => u as u8,
-        }
-    }
-}
-
-impl CastFrom<UInt> for u16 {
-    fn cast_from(u: UInt) -> u16 {
-        use UInt::*;
-        match u {
-            U8(u) => u as u16,
-            U16(u) => u,
-            U32(u) => u as u16,
-            U64(u) => u as u16,
-        }
-    }
-}
-
-impl CastFrom<UInt> for u32 {
-    fn cast_from(u: UInt) -> u32 {
-        use UInt::*;
-        match u {
-            U8(u) => u as u32,
-            U16(u) => u as u32,
-            U32(u) => u,
-            U64(u) => u as u32,
-        }
-    }
+primitive_exports! { UInt;
+    CastFrom::cast_from -> u8, |u| {
+        U8(u) => u,
+        U16(u) => u as u8,
+        U32(u) => u as u8,
+        U64(u) => u as u8,
+    };
+    CastFrom::cast_from -> u16, |u| {
+        U8(u) => u as u16,
+        U16(u) => u,
+        U32(u) => u as u16,
+        U64(u) => u as u16,
+    };
+    CastFrom::cast_from -> u32, |u| {
+        U8(u) => u as u32,
+        U16(u) => u as u32,
+        U32(u) => u,
+        U64(u) => u as u32,
+    };
+    From::from -> u64, |u| {
+        U64(u) => u,
+        U32(u) => u as u64,
+        U16(u) => u as u64,
+        U8(u) => u as u64,
+    };
+    CastFrom::cast_from -> usize, |u| {
+        U64(u) => u as usize,
+        U32(u) => u as usize,
+        U16(u) => u as usize,
+        U8(u) => u as usize,
+    };
 }
 
 impl Eq for UInt {}
@@ -1918,51 +1876,7 @@ impl From<Boolean> for UInt {
     }
 }
 
-impl From<u8> for UInt {
-    fn from(u: u8) -> UInt {
-        UInt::U8(u)
-    }
-}
-
-impl From<u16> for UInt {
-    fn from(u: u16) -> UInt {
-        UInt::U16(u)
-    }
-}
-
-impl From<u32> for UInt {
-    fn from(u: u32) -> UInt {
-        UInt::U32(u)
-    }
-}
-
-impl From<u64> for UInt {
-    fn from(u: u64) -> UInt {
-        UInt::U64(u)
-    }
-}
-
-impl From<UInt> for u64 {
-    fn from(u: UInt) -> u64 {
-        match u {
-            UInt::U64(u) => u,
-            UInt::U32(u) => u as u64,
-            UInt::U16(u) => u as u64,
-            UInt::U8(u) => u as u64,
-        }
-    }
-}
-
-impl CastFrom<UInt> for usize {
-    fn cast_from(u: UInt) -> usize {
-        match u {
-            UInt::U64(u) => u as usize,
-            UInt::U32(u) => u as usize,
-            UInt::U16(u) => u as usize,
-            UInt::U8(u) => u as usize,
-        }
-    }
-}
+primitive_imports!(UInt; u8 => U8, u16 => U16, u32 => U32, u64 => U64);
 
 impl FromStr for UInt {
     type Err = Error;
@@ -1974,16 +1888,7 @@ impl FromStr for UInt {
 
 fmt_debug!(UInt);
 
-impl fmt::Display for UInt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            UInt::U8(u) => fmt::Display::fmt(u, f),
-            UInt::U16(u) => fmt::Display::fmt(u, f),
-            UInt::U32(u) => fmt::Display::fmt(u, f),
-            UInt::U64(u) => fmt::Display::fmt(u, f),
-        }
-    }
-}
+fmt_display!(UInt; U8, U16, U32, U64);
 
 macro_rules! checked_real_functions {
     ($($try:ident => $name:ident, |$x:ident| $invalid:expr, $zero:expr;)*) => {$ (

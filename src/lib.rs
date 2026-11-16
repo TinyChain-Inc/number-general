@@ -967,7 +967,9 @@ impl CastFrom<Number> for UInt {
     }
 }
 
-/// Defines a collation order for [`Number`].
+/// Orders real-valued numbers numerically before non-real complex values.
+/// Complex values compare by norm, then real and imaginary components through
+/// [`FloatCollator`]. Collation equality matches native numerical equality.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct NumberCollator {
     complex: ComplexCollator,
