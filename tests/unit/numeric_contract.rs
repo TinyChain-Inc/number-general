@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 use collate::Collate;
@@ -7,14 +8,39 @@ use num::traits::Pow;
 use safecast::CastFrom;
 
 use super::{
-    Boolean, Complex, ErrorKind, Float, FloatCollator, FloatInstance, Int, Number, NumberClass,
-    NumberCollator, NumberInstance, UInt,
+    Boolean, Complex, ComplexCollator, ErrorKind, Float, FloatCollator, FloatInstance, Int, Number,
+    NumberClass, NumberCollator, NumberInstance, UInt,
 };
 
-fn hash(value: Number) -> u64 {
+fn hash(value: impl Hash) -> u64 {
     let mut state = DefaultHasher::new();
     value.hash(&mut state);
     state.finish()
+}
+
+fn assert_collation_laws<C: Collate>(collator: &C, values: &[C::Value])
+where
+    C::Value: Debug + Eq + Hash,
+{
+    for left in values {
+        for right in values {
+            let order = collator.cmp(left, right);
+            assert_eq!(order.is_eq(), left == right, "{left:?}, {right:?}");
+            assert_eq!(order, collator.cmp(right, left).reverse());
+            if left == right {
+                assert_eq!(hash(left), hash(right));
+            }
+
+            for third in values {
+                if order.is_le() && collator.cmp(right, third).is_le() {
+                    assert!(
+                        collator.cmp(left, third).is_le(),
+                        "{left:?}, {right:?}, {third:?}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -52,7 +78,52 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
         i64::MIN.into(),
         (i64::MIN + 1).into(),
     ];
+
+    let complex: &[Complex] = &[
+        [3.0f32, 4.0].into(),
+        [3.0f64, 4.0].into(),
+        [4.0, 3.0].into(),
+        [-3.0, 4.0].into(),
+        [3.0, -4.0].into(),
+        [0.0f32, -0.0].into(),
+        [-0.0f64, 0.0].into(),
+        [1.0, 0.0].into(),
+        [1.0, 1e-20].into(),
+        [1.0, 2e-20].into(),
+        [f64::from_bits(1), f64::from_bits(1)].into(),
+        [f64::MAX, f64::MAX].into(),
+        [f64::MAX, f64::MAX / 2.0].into(),
+        [f64::INFINITY, 1.0].into(),
+        [f64::INFINITY, 2.0].into(),
+        [f64::NEG_INFINITY, 1.0].into(),
+        [1.0, f64::INFINITY].into(),
+        [f32::NAN, 1.0].into(),
+        [f64::NAN, 1.0].into(),
+        [f64::from_bits(0xfff8_0000_0000_0001), 1.0].into(),
+        [f64::NAN, 2.0].into(),
+        [1.0, f64::NAN].into(),
+        [2.0, f64::NAN].into(),
+        [f64::INFINITY, f64::NAN].into(),
+        [f64::NAN, f64::INFINITY].into(),
+    ];
+
+    let complex_collator = ComplexCollator::default();
+    assert_collation_laws(&complex_collator, complex);
+    assert!(complex_collator
+        .cmp(&[-6.0, 8.0].into(), &[3.0, 4.0].into())
+        .is_gt());
+
+    assert!(complex_collator
+        .cmp(&[3.0, -4.0].into(), &[3.0, 4.0].into())
+        .is_lt());
+
+    let values = values
+        .into_iter()
+        .chain(complex.iter().copied().map(Number::from))
+        .collect::<Vec<_>>();
+
     let collator = NumberCollator::default();
+    assert_collation_laws(&collator, &values);
     for &left in &values {
         for &right in &values {
             assert_eq!(left == right, right == left);
@@ -60,22 +131,13 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
                 left.partial_cmp(&right),
                 right.partial_cmp(&left).map(Ordering::reverse)
             );
-            assert_eq!(
-                collator.cmp(&left, &right),
-                collator.cmp(&right, &left).reverse()
-            );
+
             if left == right {
                 assert_eq!(left.partial_cmp(&right), Some(Ordering::Equal));
-                assert_eq!(hash(left), hash(right));
-                assert_eq!(collator.cmp(&left, &right), Ordering::Equal);
-            }
-            for third in &values {
-                if collator.cmp(&left, &right).is_le() && collator.cmp(&right, third).is_le() {
-                    assert!(collator.cmp(&left, third).is_le());
-                }
             }
         }
     }
+
     assert_ne!(Number::from(-1i64), Number::from(u64::MAX));
     assert_ne!(
         Number::from(9_007_199_254_740_993u64),
@@ -84,8 +146,9 @@ fn exact_numeric_equality_hashing_and_collation_laws() {
     assert_ne!(Number::from(1.0000000000000002f64), Number::from(1.0f64));
     assert_eq!(
         collator.cmp(&Number::from([1.0, 1.0]), &Number::from([-1.0, 1.0])),
-        Ordering::Equal
+        Ordering::Greater
     );
+
     assert_ne!(Number::from([1.0, 1.0]), Number::from([-1.0, 1.0]));
 
     let floats: [Float; 16] = [

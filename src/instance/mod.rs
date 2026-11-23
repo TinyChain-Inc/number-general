@@ -877,7 +877,8 @@ impl fmt::Display for Complex {
     }
 }
 
-/// Defines a collation order for [`Complex`].
+/// Orders [`Complex`] values by double-precision magnitude, then real and imaginary
+/// components using [`FloatCollator`]. Collation equality matches value equality.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct ComplexCollator {
     float: FloatCollator,
@@ -889,10 +890,13 @@ impl Collate for ComplexCollator {
     fn cmp(&self, left: &Self::Value, right: &Self::Value) -> Ordering {
         let left: _Complex<f64> = (*left).into();
         let right: _Complex<f64> = (*right).into();
-        self.float.cmp(
-            &Float::F64(left.re.hypot(left.im)),
-            &Float::F64(right.re.hypot(right.im)),
-        )
+        self.float
+            .cmp(
+                &Float::F64(left.re.hypot(left.im)),
+                &Float::F64(right.re.hypot(right.im)),
+            )
+            .then_with(|| self.float.cmp(&Float::F64(left.re), &Float::F64(right.re)))
+            .then_with(|| self.float.cmp(&Float::F64(left.im), &Float::F64(right.im)))
     }
 }
 
