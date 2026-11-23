@@ -967,7 +967,9 @@ impl CastFrom<Number> for UInt {
     }
 }
 
-/// Defines a collation order for [`Number`].
+/// Orders real-valued numbers numerically before non-real complex numbers.
+/// Complex ordering delegates to [`ComplexCollator`]; collation equality matches
+/// numerical equality across representations.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct NumberCollator {
     complex: ComplexCollator,
@@ -1278,17 +1280,14 @@ mod tests {
 }
 
 #[cfg(test)]
-#[path = "../tests/unit/numeric_contract.rs"]
-mod numeric_contract;
-
-#[cfg(test)]
 #[path = "../tests/unit/checked.rs"]
 mod checked_contract;
-
-#[cfg(test)]
-#[path = "../tests/unit/contracts.rs"]
-mod numerical_contracts;
-
 #[cfg(test)]
 #[path = "../tests/unit/num_traits.rs"]
 mod num_traits_contract;
+#[cfg(test)]
+#[path = "../tests/unit/numeric_contract.rs"]
+mod numeric_contract;
+#[cfg(test)]
+#[path = "../tests/unit/contracts.rs"]
+mod numerical_contracts;
